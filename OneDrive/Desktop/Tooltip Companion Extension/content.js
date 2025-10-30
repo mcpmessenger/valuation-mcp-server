@@ -4,41 +4,49 @@
 (function() {
     'use strict';
     
+    // Load Montserrat font for branding
+    if (!document.getElementById('montserrat-font')) {
+        const link = document.createElement('link');
+        link.id = 'montserrat-font';
+        link.rel = 'preconnect';
+        link.href = 'https://fonts.googleapis.com';
+        document.head.appendChild(link);
+        
+        const link2 = document.createElement('link');
+        link2.rel = 'preconnect';
+        link2.href = 'https://fonts.gstatic.com';
+        link2.crossOrigin = 'anonymous';
+        document.head.appendChild(link2);
+        
+        const link3 = document.createElement('link');
+        link3.rel = 'stylesheet';
+        link3.href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap';
+        document.head.appendChild(link3);
+    }
+    
         // Configuration
         const CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
-        const HOVER_DELAY = 1200; // ms before showing tooltip (increased for slow-loading sites like banking)
-        const HIDE_DELAY = 500; // ms before hiding tooltip when mouse leaves (longer = more stable)
-        const MIN_DISPLAY_TIME = 1000; // Minimum time to show tooltip once it appears
+        const HOVER_DELAY = 1000; // ms before showing tooltip
+        const HIDE_DELAY = 400; // ms before hiding tooltip when mouse leaves
+        const MIN_DISPLAY_TIME = 800; // Minimum time to show tooltip once it appears
         const MAX_TOOLTIP_WIDTH = 400;
         const MAX_TOOLTIP_HEIGHT = 300;
     
-    // Get backend URL and enabled state from storage
-    chrome.storage.sync.get({ backendUrl: 'http://localhost:3000', tooltipsEnabled: true }, (items) => {
+    // Get backend URL from storage (tooltips always enabled)
+    chrome.storage.sync.get({ backendUrl: 'http://localhost:3000' }, (items) => {
         const BACKEND_SERVICE_URL = items.backendUrl.replace(/\/$/, ''); // Remove trailing slash
-        const TOOLTIPS_ENABLED = items.tooltipsEnabled;
         
-        const status = TOOLTIPS_ENABLED ? '✅ ENABLED' : '❌ DISABLED';
-        console.log(`${status} Tooltip Companion is active!`);
+        // Tooltips are always enabled - no toggle needed
+        console.log('✅ Tooltip Companion is active! (Tooltips always enabled)');
     console.log(`   Backend Service URL: ${BACKEND_SERVICE_URL}`);
-        console.log(`   Toggle: Right-click → ${TOOLTIPS_ENABLED ? 'Disable' : 'Enable'} Tooltips`);
         
-        // Initialize the tooltip system
-        initTooltipSystem(BACKEND_SERVICE_URL, TOOLTIPS_ENABLED);
+        // Initialize the tooltip system (always enabled)
+        initTooltipSystem(BACKEND_SERVICE_URL, true);
     });
     
     // Listen for messages from background script
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.action === 'toggle-tooltips') {
-            const status = request.enabled ? '✅ ENABLED' : '❌ DISABLED';
-            console.log(`Tooltips ${status}`);
-            
-            // Update the enabled state if initTooltipSystem is available
-            if (window.tooltipsEnabled !== undefined) {
-                window.tooltipsEnabled = request.enabled;
-            }
-            sendResponse({ success: true });
-        }
-        else if (request.action === 'precrawl-links') {
+        if (request.action === 'precrawl-links') {
             console.log('🕷️ Precrawl triggered from context menu');
             
             // Trigger precrawl function if it exists
@@ -76,30 +84,14 @@
             };
             return true; // Keep the channel open for async response
         }
-        else if (request.action === 'open-chat') {
-            console.log('💬 Opening chat widget...');
-            
-            // Find and show chat widget
-            const chatWidget = document.getElementById('playwright-chat-widget');
-            if (chatWidget) {
-                const chatToggle = document.getElementById('chat-toggle');
-                if (chatToggle) {
-                    chatToggle.click(); // Simulate click to open chat
-                }
-                sendResponse({ success: true });
-            } else {
-                sendResponse({ success: false, error: 'Chat widget not initialized' });
-            }
-            return true;
-        }
         else {
             sendResponse({ success: false, error: 'Unknown action' });
         }
     });
     
     function initTooltipSystem(BACKEND_SERVICE_URL, tooltipsEnabled = true) {
-        // State management
-        window.tooltipsEnabled = tooltipsEnabled;
+        // State management - tooltips always enabled
+        window.tooltipsEnabled = true;
         const cache = new Map();
         const activeTooltip = { 
             element: null, 
@@ -141,10 +133,12 @@
             tooltipDiv.style.cssText = `
                 position: fixed;
                 display: none;
-                background: white;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                background: rgba(15, 15, 15, 0.9);
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 16px;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 1px rgba(255, 255, 255, 0.1);
                 padding: 0;
                 z-index: 999999;
                 pointer-events: auto;
@@ -153,6 +147,7 @@
                 overflow: hidden;
                 opacity: 0;
                 transition: opacity 0.2s ease-in-out;
+                font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             `;
             
             // Keep tooltip visible when hovering over it
@@ -183,9 +178,9 @@
                 tooltipDiv.innerHTML = `<img src="${screenshotUrl}" 
                     style="display: block; width: 100%; height: auto; max-height: ${MAX_TOOLTIP_HEIGHT}px; object-fit: cover;" 
                     alt="Link preview" 
-                    onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=&quot;padding: 20px; text-align: center; color: #d32f2f;&quot;>⚠️ Failed to load preview</div>'">`;
+                    onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=&quot;padding: 20px; text-align: center; color: rgba(244, 67, 54, 0.9); font-family: Montserrat, sans-serif;&quot;>⚠️ Failed to load preview</div>'">`;
             } else {
-                tooltipDiv.innerHTML = `<div style="padding: 20px; text-align: center; color: #666;">Loading preview...</div>`;
+                tooltipDiv.innerHTML = `<div style="padding: 20px; text-align: center; color: rgba(255, 255, 255, 0.7); font-family: Montserrat, sans-serif;">Loading preview...</div>`;
             }
             
             // Position tooltip
@@ -254,15 +249,19 @@
             return cacheEntry && (Date.now() - cacheEntry.timestamp) < CACHE_TTL;
         }
         
-        // Fetch screenshot from backend
-        async function fetchScreenshot(url) {
+        // Fetch screenshot from backend with retry mechanism
+        async function fetchScreenshot(url, retryCount = 0) {
+            const maxRetries = 2;
+            const retryDelay = Math.pow(2, retryCount) * 1000; // Exponential backoff: 1s, 2s, 4s
+            
             try {
-                console.log(`📸 Fetching screenshot for: ${url}`);
-            const response = await fetch(`${BACKEND_SERVICE_URL}/capture`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url })
-            });
+                console.log(`📸 Fetching screenshot for: ${url}${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`);
+                
+                const response = await fetch(`${BACKEND_SERVICE_URL}/capture`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
                 
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -322,8 +321,22 @@
                 
                 console.log(`✅ Screenshot cached successfully`);
                 return blobUrl;
-        } catch (error) {
+                
+            } catch (error) {
                 console.error(`Failed to fetch screenshot for ${url}:`, error);
+                
+                // Retry logic for certain types of errors
+                if (retryCount < maxRetries && (
+                    error.message.includes('timeout') || 
+                    error.message.includes('Timeout') ||
+                    error.message.includes('500') ||
+                    error.message.includes('Failed to fetch')
+                )) {
+                    console.log(`🔄 Retrying in ${retryDelay}ms... (${retryCount + 1}/${maxRetries})`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    return fetchScreenshot(url, retryCount + 1);
+                }
+                
                 throw error;
             }
         }
@@ -342,35 +355,46 @@
                         if (request.result && isCacheValid(request.result)) {
                             console.log(`📦 IndexedDB hit: ${url}`);
                             
-                            // Convert base64 to blob if needed
-                            let blobUrl = request.result.screenshotUrl;
+                            // Get the base64 data from the stored result
+                            const base64Data = request.result.screenshotData || request.result.screenshotUrl;
                             
-                            // If it's base64 data, convert to blob
-                            if (typeof request.result.screenshotUrl === 'string' && 
-                                !request.result.screenshotUrl.startsWith('blob:') && 
-                                !request.result.screenshotUrl.startsWith('http')) {
-                                try {
-                                    const binaryString = atob(request.result.screenshotUrl);
-                                    const bytes = new Uint8Array(binaryString.length);
-                                    for (let i = 0; i < binaryString.length; i++) {
-                                        bytes[i] = binaryString.charCodeAt(i);
-                                    }
-                                    const blob = new Blob([bytes], { type: 'image/png' });
-                                    blobUrl = URL.createObjectURL(blob);
-                                } catch (e) {
-                                    console.warn('Failed to convert base64 to blob:', e);
-                                    resolve(null);
-                                    return;
-                                }
+                            if (!base64Data) {
+                                console.warn('No screenshot data found in IndexedDB for:', url);
+                                resolve(null);
+                                return;
                             }
                             
-                            // Also update memory cache
-                            cache.set(url, {
-                                screenshotUrl: blobUrl,
-                                timestamp: request.result.timestamp
-                            });
-                            
-                            resolve(blobUrl);
+                            try {
+                                // Convert base64 to blob
+                                let base64String = base64Data;
+                                
+                                // Extract base64 data from data URL if present
+                                if (base64Data.startsWith('data:image/')) {
+                                    const commaIndex = base64Data.indexOf(',');
+                                    base64String = base64Data.substring(commaIndex + 1);
+                                }
+                                
+                                const binaryString = atob(base64String);
+                                const bytes = new Uint8Array(binaryString.length);
+                                for (let i = 0; i < binaryString.length; i++) {
+                                    bytes[i] = binaryString.charCodeAt(i);
+                                }
+                                const blob = new Blob([bytes], { type: 'image/png' });
+                                const blobUrl = URL.createObjectURL(blob);
+                                
+                                console.log(`✅ Converted IndexedDB data to blob: ${url}`);
+                                
+                                // Also update memory cache
+                                cache.set(url, {
+                                    screenshotUrl: blobUrl,
+                                    timestamp: request.result.timestamp
+                                });
+                                
+                                resolve(blobUrl);
+                            } catch (e) {
+                                console.warn('Failed to convert base64 to blob:', e);
+                                resolve(null);
+                            }
                         } else {
                             resolve(null);
                         }
@@ -384,20 +408,20 @@
         }
         
         // Save screenshot to IndexedDB
-        async function saveToIndexedDB(url, dataToSave) {
+        async function saveToIndexedDB(url, base64Data) {
             if (!db) return;
             
             try {
                 const data = {
                     url: url,
-                    screenshotUrl: dataToSave, // Can be base64 data or blob URL
+                    screenshotData: base64Data, // Store the actual base64 image data
                     timestamp: Date.now()
                 };
                 
                 const transaction = db.transaction([STORE_NAME], 'readwrite');
                 const store = transaction.objectStore(STORE_NAME);
                 await store.put(data);
-                console.log(`💾 Saved to IndexedDB: ${url}`);
+                console.log(`💾 Saved screenshot data to IndexedDB: ${url} (${base64Data.length} chars)`);
             } catch (error) {
                 console.warn('IndexedDB write error:', error);
             }
@@ -408,6 +432,7 @@
             // Check memory cache first
             const cacheEntry = cache.get(url);
             if (isCacheValid(cacheEntry)) {
+                console.log(`💾 Memory cache hit: ${url}`);
                 return cacheEntry.screenshotUrl;
             }
             
@@ -418,10 +443,8 @@
             }
             
             // Fetch from backend
+            console.log(`🌐 Fetching from backend: ${url}`);
             const screenshotUrl = await fetchScreenshot(url);
-            
-            // Save to IndexedDB for persistence
-            await saveToIndexedDB(url, screenshotUrl);
             
             return screenshotUrl;
         }
@@ -494,18 +517,18 @@
                 tooltipDiv = createTooltipElement();
             }
             
-            const stateIcon = buttonInfo.state === 'disabled' ? '❌' : '✅';
+                    const stateIcon = buttonInfo.state === 'disabled' ? '❌' : '✅';
             const typeIcon = buttonInfo.type === 'submit' ? '📤' : 
                             buttonInfo.type === 'reset' ? '🔄' : '🔘';
             
             tooltipDiv.innerHTML = `
-                <div style="padding: 12px; min-width: 200px; max-width: ${MAX_TOOLTIP_WIDTH}px;">
-                    <div style="font-weight: 600; font-size: 14px; color: #667eea; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                <div style="padding: 12px; min-width: 200px; max-width: ${MAX_TOOLTIP_WIDTH}px; font-family: 'Montserrat', sans-serif;">
+                    <div style="font-weight: 500; font-size: 14px; color: rgba(255, 255, 255, 0.95); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
                         ${typeIcon} <span>${buttonInfo.label || buttonInfo.text || 'Button'}</span>
                     </div>
-                    ${buttonInfo.purpose ? `<div style="font-size: 12px; color: #666; margin-bottom: 6px;">${buttonInfo.purpose}</div>` : ''}
-                    ${buttonInfo.shortcut ? `<div style="font-size: 11px; color: #999; font-style: italic;">⌨️ ${buttonInfo.shortcut}</div>` : ''}
-                    <div style="font-size: 10px; color: #aaa; margin-top: 8px; padding-top: 6px; border-top: 1px solid #eee;">
+                    ${buttonInfo.purpose ? `<div style="font-size: 12px; color: rgba(255, 255, 255, 0.7); margin-bottom: 6px;">${buttonInfo.purpose}</div>` : ''}
+                    ${buttonInfo.shortcut ? `<div style="font-size: 11px; color: rgba(255, 255, 255, 0.5); font-style: italic;">⌨️ ${buttonInfo.shortcut}</div>` : ''}
+                    <div style="font-size: 10px; color: rgba(255, 255, 255, 0.5); margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255, 255, 255, 0.1);">
                         ${stateIcon} ${buttonInfo.state}
                     </div>
                 </div>
@@ -543,10 +566,7 @@
         
         // Handle link hover
         function handleLinkHover(event) {
-            // Check if tooltips are enabled
-            if (!window.tooltipsEnabled) {
-                return;
-            }
+            // Tooltips are always enabled
             
             const element = event.currentTarget;
             const url = getElementUrl(element);
@@ -583,13 +603,29 @@
                 return;
             }
             
-            // Skip LinkedIn auth/session URLs (likely to return 500)
+            // Skip problematic URLs that are likely to timeout or fail
             if (url.includes('linkedin.com/me/') || 
                 url.includes('/profile-views/') ||
                 url.includes('tscp?destination') ||
                 url.includes('/authenticate') ||
                 url.includes('/login')) {
                 console.log(`⏭️ Skipping auth/session URL: ${url}`);
+                return;
+            }
+            
+            // Skip only problematic banking URLs that require authentication
+            if (url.includes('wellsfargo.com') && (
+                url.includes('/yourinfo/') ||
+                url.includes('/account/') ||
+                url.includes('/transfer') ||
+                url.includes('/payments') ||
+                url.includes('/login') ||
+                url.includes('/signin') ||
+                url.includes('/auth/') ||
+                url.includes('/enrollment') ||
+                url.includes('/authentication')
+            )) {
+                console.log(`🏦 Skipping banking auth URL: ${url}`);
                 return;
             }
             
@@ -622,7 +658,7 @@
             // Check cache first
             const cacheEntry = cache.get(url);
             if (cacheEntry && isCacheValid(cacheEntry)) {
-                // Cached - show after short delay
+                // Cached - show after delay
                 activeTooltip.timeout = setTimeout(() => {
                     if (activeTooltip.element === element && activeTooltip.currentUrl === url && !activeTooltip.isVisible) {
                         showTooltip(event.clientX, event.clientY, cacheEntry.screenshotUrl);
@@ -644,7 +680,7 @@
                             console.warn('Screenshot load timeout, hiding tooltip');
                             hideTooltip();
                         }
-                    }, 120000); // 120 second timeout (for slow-loading banking sites)
+                    }, 120000); // 2 minute timeout
                     
                     // Fetch screenshot
                     getScreenshot(url)
@@ -657,7 +693,7 @@
                                     tooltipDiv.innerHTML = `<img src="${screenshotUrl}" 
                                         style="display: block; width: 100%; height: auto; max-height: ${MAX_TOOLTIP_HEIGHT}px; object-fit: cover;" 
                                         alt="Link preview" 
-                                        onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=&quot;padding: 20px; text-align: center; color: #d32f2f;&quot;>⚠️ Failed to load preview</div>'">`;
+                                        onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=&quot;padding: 20px; text-align: center; color: rgba(244, 67, 54, 0.9); font-family: Montserrat, sans-serif;&quot;>⚠️ Failed to load preview</div>'">`;
                                 }
                             }
                         })
@@ -665,9 +701,20 @@
                             clearTimeout(loadingTimeout);
                             console.warn('Failed to load screenshot:', error);
                             if (activeTooltip.element === element && activeTooltip.currentUrl === url && tooltipDiv) {
-                                tooltipDiv.innerHTML = `<div style="padding: 15px; text-align: center; color: #d32f2f; font-size: 12px;">⚠️ Failed to load</div>`;
-                                // Auto-hide error after 2 seconds
-                                setTimeout(() => hideTooltip(), 2000);
+                                // Show error message
+                                let errorMessage = '⚠️ Failed to load preview';
+                                
+                                if (error.message.includes('timeout') || error.message.includes('Timeout')) {
+                                    errorMessage = '⏱️ Site loading timeout - try again later';
+                                } else if (error.message.includes('500')) {
+                                    errorMessage = '🔧 Server error - backend may be restarting';
+                                } else if (error.message.includes('Failed to fetch')) {
+                                    errorMessage = '🌐 Network error - check connection';
+                                }
+                                
+                                tooltipDiv.innerHTML = `<div style="padding: 15px; text-align: center; color: rgba(244, 67, 54, 0.9); font-size: 12px; font-family: Montserrat, sans-serif;">${errorMessage}</div>`;
+                                // Auto-hide error after 3 seconds
+                                setTimeout(() => hideTooltip(), 3000);
                             }
                         });
                 }
@@ -996,11 +1043,7 @@
         function autoPrecrawlTopLinks() {
             // Wait for page to settle
             setTimeout(() => {
-                // Only precrawl if tooltips are enabled
-                if (!window.tooltipsEnabled) {
-                    console.log('⏭️ Tooltips disabled, skipping auto-precrawl');
-                    return;
-                }
+                // Tooltips always enabled - proceed with precrawl
                 
                 console.log('🤖 Auto-precrawling top links for instant tooltips...');
                 
@@ -1069,97 +1112,90 @@
         }, 1000);
         
         // Initialize chat widget
+        console.log('🚀 Initializing chat widget with backend URL:', BACKEND_SERVICE_URL);
         initChatWidget(BACKEND_SERVICE_URL);
     }
     
     // Initialize floating chat widget
     function initChatWidget(backendUrl) {
-        // Create minimal chat widget with bubble design
+        console.log('📎 Creating chat widget with backend URL:', backendUrl);
+        // Create minimal chat widget that expands with content
         const chatHTML = `
-            <div id="playwright-chat-widget" style="display: block; position: fixed; bottom: 20px; right: 20px; z-index: 999998; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
-                <div class="chat-container" style="position: absolute; bottom: 80px; right: 0; width: 340px; height: 460px; 
-                    background: rgba(255, 255, 255, 0.98); 
+            <div id="playwright-chat-widget" style="display: block; position: fixed; bottom: 20px; right: 20px; z-index: 999998; font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+                <div class="chat-container" style="position: absolute; bottom: 70px; right: 0; width: 320px; 
+                    background: rgba(15, 15, 15, 0.85); 
                     backdrop-filter: blur(20px);
-                    border: 1px solid rgba(0, 0, 0, 0.08);
+                    -webkit-backdrop-filter: blur(20px);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
                     border-radius: 20px; 
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-                    display: flex; 
+                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 1px rgba(255, 255, 255, 0.1);
+                    display: none;
                     flex-direction: column; 
                     overflow: hidden;
-                    resize: both;
-                    min-width: 320px;
-                    min-height: 400px;
-                    max-width: 600px;
-                    max-height: 90vh;">
-                    <div class="chat-resize-indicator" style="position: absolute; bottom: 3px; right: 3px; width: 12px; height: 12px; z-index: 10; pointer-events: none; background: 
-                        repeating-linear-gradient(
-                            45deg,
-                            transparent,
-                            transparent 3px,
-                            rgba(102, 126, 234, 0.3) 3px,
-                            rgba(102, 126, 234, 0.3) 6px
-                        );"></div>
-                    <div class="chat-header" style="background: rgba(255, 255, 255, 1); 
-                        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-                        color: #1a1a1a; 
-                        padding: 14px 16px; 
+                    min-width: 280px;
+                    max-width: 400px;
+                    max-height: calc(100vh - 100px);
+                    transition: opacity 0.2s ease-in-out;">
+                    <div class="chat-header" style="background: rgba(0, 0, 0, 0.3); 
+                        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                        color: #e8e8e8; 
+                        padding: 12px 16px; 
                         display: flex; 
                         justify-content: space-between; 
                         align-items: center;
-                        cursor: move;">
+                        cursor: move;
+                        flex-shrink: 0;">
                         <div style="display: flex; align-items: center; gap: 8px;">
-                            <span style="font-size: 24px; line-height: 1;">🕷️</span>
-                            <span class="chat-title" style="font-weight: 600; font-size: 14px; color: #1a1a1a;">Tooltip Companion</span>
+                            <span class="chat-header-icon" style="font-size: 14px; line-height: 1;">📎</span>
+                            <span class="chat-title" style="font-weight: 500; font-size: 13px; color: #ffffff; letter-spacing: 0.01em;">Tooltip Companion</span>
                         </div>
-                        <div style="display: flex; gap: 6px;">
-                            <button class="chat-minimize" style="background: transparent; border: none; color: #666; font-size: 18px; cursor: pointer; padding: 4px; transition: all 0.2s; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;">⎯</button>
-                            <button class="chat-close" style="background: transparent; border: none; color: #666; font-size: 18px; cursor: pointer; padding: 4px; transition: all 0.2s; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;">✕</button>
-                        </div>
-                    </div>
-                    <div class="chat-messages" id="chat-messages" style="flex: 1; overflow-y: auto; padding: 16px; background: rgba(250, 250, 252, 0.98);">
-                        <div class="chat-message bot" style="margin-bottom: 12px;">
-                            <div class="message-content" style="background: #667eea; 
-                                color: white;
-                                border-radius: 18px; 
-                                padding: 10px 14px; 
-                                max-width: 75%; 
-                                font-size: 14px;">🎉 UPDATED! Your extension has been reloaded successfully! Ready to chat?</div>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <button class="chat-theme-toggle" id="chat-theme-toggle" title="Toggle light/dark mode" style="background: transparent; border: none; color: rgba(255, 255, 255, 0.6); font-size: 16px; cursor: pointer; padding: 4px 6px; transition: all 0.2s; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px;">🌙</button>
+                            <button class="chat-close" style="background: transparent; border: none; color: rgba(255, 255, 255, 0.6); font-size: 18px; cursor: pointer; padding: 2px 6px; transition: all 0.2s; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 4px;">✕</button>
                         </div>
                     </div>
-                    <div class="chat-input-area" style="display: flex; gap: 6px; padding: 12px; background: rgba(255, 255, 255, 1); border-top: 1px solid rgba(0, 0, 0, 0.06);">
+                    <div class="chat-messages" id="chat-messages" style="overflow-y: auto; overflow-x: hidden; padding: 14px 16px; background: transparent; 
+                        flex: 1 1 auto;
+                        min-height: 0;
+                        max-height: calc(100vh - 200px);
+                        scrollbar-width: thin;
+                        scrollbar-color: rgba(255, 255, 255, 0.2) transparent;">
+                    </div>
+                    <div class="chat-input-area" style="display: flex; gap: 8px; padding: 12px 16px; background: rgba(0, 0, 0, 0.3); border-top: 1px solid rgba(255, 255, 255, 0.08); flex-shrink: 0;">
                         <input type="file" id="chat-upload-input" accept="image/*" style="display: none;">
-                        <button id="chat-upload" title="Upload image for OCR" style="
-                            background: rgba(102, 126, 234, 0.1);
-                            border: 1px solid rgba(102, 126, 234, 0.2);
-                            color: #667eea; 
+                        <button id="chat-upload" title="📸 Click: Screenshot page | Right-click: Upload file" style="
+                            background: rgba(255, 255, 255, 0.08);
+                            border: 1px solid rgba(255, 255, 255, 0.12);
+                            color: rgba(255, 255, 255, 0.9); 
                             border-radius: 50%; 
-                            width: 36px; 
-                            height: 36px; 
+                            width: 32px; 
+                            height: 32px; 
                             cursor: pointer; 
-                            font-size: 16px; 
+                            font-size: 14px; 
                             transition: all 0.2s;
                             display: flex;
                             align-items: center;
                             justify-content: center;
-                            flex-shrink: 0;">📷</button>
+                            flex-shrink: 0;">📸</button>
                         <input type="text" id="chat-input" placeholder="Type a message..." style="flex: 1; 
-                            background: rgba(0, 0, 0, 0.03);
-                            border: 1px solid rgba(0, 0, 0, 0.08);
-                            border-radius: 20px; 
-                            padding: 8px 14px; 
-                            font-size: 14px; 
-                            color: #1a1a1a;
+                            background: rgba(0, 0, 0, 0.3);
+                            border: 1px solid rgba(255, 255, 255, 0.12);
+                            border-radius: 10px; 
+                            padding: 10px 14px; 
+                            font-size: 13px; 
+                            color: #ffffff;
+                            font-family: 'Montserrat', sans-serif;
                             outline: none;
                             transition: all 0.2s;">
                         <button id="chat-send" style="
-                            background: #667eea;
-                            border: none;
-                            color: white; 
+                            background: rgba(255, 255, 255, 0.15);
+                            border: 1px solid rgba(255, 255, 255, 0.2);
+                            color: #ffffff; 
                             border-radius: 50%; 
-                            width: 36px; 
-                            height: 36px; 
+                            width: 32px; 
+                            height: 32px; 
                             cursor: pointer; 
-                            font-size: 16px;
+                            font-size: 14px;
                             transition: all 0.2s;
                             display: flex;
                             align-items: center;
@@ -1170,24 +1206,77 @@
                 <button class="chat-toggle" id="chat-toggle" style="
                     width: 56px; 
                     height: 56px; 
-                    border-radius: 50%; 
-                    background: #667eea;
+                    border-radius: 0; 
+                    background: transparent;
                     border: none;
-                    color: white; 
-                    font-size: 24px; 
-                    cursor: pointer; 
-                    box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4);
-                    transition: all 0.2s;">💬</button>
+                    color: #333; 
+                    font-size: 40px; 
+                    cursor: move; 
+                    box-shadow: none;
+                    transition: all 0.2s;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 0;
+                    position: relative;
+                    overflow: visible;
+                    user-select: none;">📎</button>
             </div>
         `;
         
         const chatDiv = document.createElement('div');
         chatDiv.innerHTML = chatHTML;
         document.body.appendChild(chatDiv.firstElementChild);
+        console.log('✅ Chat widget HTML added to page');
         
         // Setup chat functionality
         const chatToggle = document.getElementById('chat-toggle');
         const chatWidget = document.getElementById('playwright-chat-widget');
+        
+        console.log('🔍 Chat toggle found:', !!chatToggle);
+        console.log('🔍 Chat widget found:', !!chatWidget);
+        
+        // Set glippy image as background for chat toggle button
+        try {
+            const glippyUrl = chrome.runtime.getURL('icons/glippy.png');
+            console.log('Attempting to load glippy image:', glippyUrl);
+            
+            // Test if image loads
+            const img = new Image();
+            img.onload = function() {
+                console.log('✅ Glippy image loaded successfully, applying to chat toggle');
+                chatToggle.style.background = `transparent url('${glippyUrl}') center/contain no-repeat`;
+                chatToggle.style.color = 'transparent';
+                chatToggle.innerHTML = '';
+                chatToggle.style.width = '56px';
+                chatToggle.style.height = '56px';
+                chatToggle.style.borderRadius = '0';
+                chatToggle.style.overflow = 'visible';
+            };
+            img.onerror = function() {
+                console.log('❌ Glippy image failed to load, using emoji fallback');
+                chatToggle.style.background = 'transparent';
+                chatToggle.style.color = '#333';
+                chatToggle.innerHTML = '📎';
+            };
+            img.src = glippyUrl;
+            
+        } catch (e) {
+            console.log('❌ Error setting up glippy image, using emoji fallback:', e);
+            chatToggle.style.background = 'transparent';
+            chatToggle.style.color = '#333';
+            chatToggle.innerHTML = '📎';
+        }
+        
+        // Ensure button is visible after a short delay (fallback)
+        setTimeout(() => {
+            if (chatToggle.style.color === 'transparent' && !chatToggle.style.background.includes('url')) {
+                console.log('Fallback: Making chat toggle visible with emoji');
+                chatToggle.style.background = 'transparent';
+                chatToggle.style.color = '#333';
+                chatToggle.innerHTML = '📎';
+            }
+        }, 1000);
         const chatContainer = chatWidget.querySelector('.chat-container');
         const chatInput = document.getElementById('chat-input');
         const chatSend = document.getElementById('chat-send');
@@ -1196,12 +1285,132 @@
         const chatMessages = document.getElementById('chat-messages');
         const closeBtn = chatWidget.querySelector('.chat-close');
         const minimizeBtn = chatWidget.querySelector('.chat-minimize');
+        const themeToggle = document.getElementById('chat-theme-toggle');
+        const chatInputArea = chatContainer.querySelector('.chat-input-area');
+        const chatHeader = chatContainer.querySelector('.chat-header');
         
         let isOpen = false;
         let isMinimized = false;
+        let isDarkMode = true; // Default to dark mode
+        
+        // Load saved theme preference
+        try {
+            const savedTheme = localStorage.getItem('chat-theme');
+            if (savedTheme === 'light') {
+                isDarkMode = false;
+            }
+        } catch (e) {}
+        
+        // Apply theme (must be called after all elements are defined)
+        function applyTheme() {
+            if (!chatContainer || !chatHeader || !chatInput || !chatInputArea || !chatSend || !chatUpload || !themeToggle || !closeBtn) {
+                console.warn('Theme elements not ready yet, skipping theme application');
+                return;
+            }
+            
+            if (isDarkMode) {
+                // Dark mode (obsidian glass)
+                chatContainer.style.background = 'rgba(15, 15, 15, 0.85)';
+                chatContainer.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+                chatHeader.style.background = 'rgba(0, 0, 0, 0.3)';
+                chatHeader.style.borderBottomColor = 'rgba(255, 255, 255, 0.08)';
+                chatHeader.style.color = '#e8e8e8';
+                const title = chatContainer.querySelector('.chat-title');
+                if (title) title.style.color = '#ffffff';
+                chatInput.style.background = 'rgba(0, 0, 0, 0.3)';
+                chatInput.style.borderColor = 'rgba(255, 255, 255, 0.12)';
+                chatInput.style.color = '#ffffff';
+                chatInput.style.setProperty('--placeholder-color', 'rgba(255, 255, 255, 0.4)');
+                chatInputArea.style.background = 'rgba(0, 0, 0, 0.3)';
+                chatInputArea.style.borderTopColor = 'rgba(255, 255, 255, 0.08)';
+                chatSend.style.background = 'rgba(255, 255, 255, 0.15)';
+                chatSend.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                chatUpload.style.background = 'rgba(255, 255, 255, 0.08)';
+                chatUpload.style.borderColor = 'rgba(255, 255, 255, 0.12)';
+                themeToggle.innerHTML = '🌙';
+                themeToggle.style.color = 'rgba(255, 255, 255, 0.6)';
+                closeBtn.style.color = 'rgba(255, 255, 255, 0.6)';
+            } else {
+                // Light mode (clean glass)
+                chatContainer.style.background = 'rgba(255, 255, 255, 0.95)';
+                chatContainer.style.borderColor = 'rgba(0, 0, 0, 0.1)';
+                chatHeader.style.background = 'rgba(255, 255, 255, 0.9)';
+                chatHeader.style.borderBottomColor = 'rgba(0, 0, 0, 0.08)';
+                chatHeader.style.color = '#1a1a1a';
+                const title = chatContainer.querySelector('.chat-title');
+                if (title) title.style.color = '#1a1a1a';
+                chatInput.style.background = 'rgba(0, 0, 0, 0.03)';
+                chatInput.style.borderColor = 'rgba(0, 0, 0, 0.1)';
+                chatInput.style.color = '#1a1a1a';
+                chatInput.style.setProperty('--placeholder-color', 'rgba(0, 0, 0, 0.4)');
+                chatInputArea.style.background = 'rgba(255, 255, 255, 0.95)';
+                chatInputArea.style.borderTopColor = 'rgba(0, 0, 0, 0.08)';
+                chatSend.style.background = '#667eea';
+                chatSend.style.borderColor = '#667eea';
+                chatUpload.style.background = 'rgba(102, 126, 234, 0.1)';
+                chatUpload.style.borderColor = 'rgba(102, 126, 234, 0.2)';
+                themeToggle.innerHTML = '☀️';
+                themeToggle.style.color = 'rgba(0, 0, 0, 0.6)';
+                closeBtn.style.color = 'rgba(0, 0, 0, 0.6)';
+            }
+            
+            // Update input placeholder
+            chatInput.setAttribute('placeholder', 'Type a message...');
+            
+            // Save preference
+            try {
+                localStorage.setItem('chat-theme', isDarkMode ? 'dark' : 'light');
+            } catch (e) {}
+        }
+        
+        // Initialize theme after all elements are ready
+        setTimeout(() => applyTheme(), 0);
+        
+        // Theme toggle handler
+        themeToggle.addEventListener('click', (e) => {
+            e.stopPropagation(); // Prevent dragging
+            isDarkMode = !isDarkMode;
+            applyTheme();
+            
+            // Update message bubbles to match theme
+            const allMessages = chatMessages.querySelectorAll('.chat-message');
+            allMessages.forEach(msg => {
+                const content = msg.querySelector('.message-content');
+                if (msg.classList.contains('user')) {
+                    if (isDarkMode) {
+                        content.style.background = 'rgba(255, 255, 255, 0.15)';
+                        content.style.color = '#ffffff';
+                        content.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+                    } else {
+                        content.style.background = '#667eea';
+                        content.style.color = 'white';
+                        content.style.borderColor = '#667eea';
+                    }
+                } else {
+                    if (isDarkMode) {
+                        content.style.background = 'rgba(0, 0, 0, 0.3)';
+                        content.style.color = '#e8e8e8';
+                        content.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+                    } else {
+                        content.style.background = 'rgba(102, 126, 234, 0.1)';
+                        content.style.color = '#1a1a1a';
+                        content.style.borderColor = 'rgba(102, 126, 234, 0.2)';
+                    }
+                }
+            });
+        });
+        
+        // Hover effects for theme toggle
+        themeToggle.addEventListener('mouseenter', () => {
+            themeToggle.style.background = isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)';
+        });
+        themeToggle.addEventListener('mouseleave', () => {
+            themeToggle.style.background = 'transparent';
+        });
         
         // Make chat toggle button always visible
         chatToggle.style.display = 'block';
+        console.log('Chat toggle button created and should be visible');
         
         // Make widget draggable
         let isDragging = false;
@@ -1216,9 +1425,10 @@
         let widgetX = 20;
         let widgetY = 20;
         
-        // Make chat header draggable
-        const chatHeader = chatContainer.querySelector('.chat-header');
-        chatHeader.style.cursor = 'move';
+        // Chat header already defined above, just set cursor
+        if (chatHeader) {
+            chatHeader.style.cursor = 'move';
+        }
         
         // Save position function
         function savePosition(x, y) {
@@ -1241,10 +1451,93 @@
         // Load saved position
         loadPosition();
         
-        // Drag functionality for container
+        // Make toggle button draggable - it should drag immediately when clicked and moved
+        let toggleDragStartX = 0;
+        let toggleDragStartY = 0;
+        let toggleHasDragged = false;
+        let toggleIsDown = false;
+        
+        // Handle toggle button mousedown
+        chatToggle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            toggleIsDown = true;
+            toggleHasDragged = false;
+            toggleDragStartX = e.clientX;
+            toggleDragStartY = e.clientY;
+            
+            // Initialize drag offsets from toggle button position
+            const rect = chatWidget.getBoundingClientRect();
+            xOffset = e.clientX - rect.left;
+            yOffset = e.clientY - rect.top;
+        });
+        
+        // Drag functionality for container (header and toggle button)
         chatHeader.addEventListener('mousedown', dragStart);
-        document.addEventListener('mousemove', drag);
-        document.addEventListener('mouseup', dragEnd);
+        
+        // Global mousemove handler
+        document.addEventListener('mousemove', (e) => {
+            // Handle dragging from toggle button
+            if (toggleIsDown) {
+                const deltaX = Math.abs(e.clientX - toggleDragStartX);
+                const deltaY = Math.abs(e.clientY - toggleDragStartY);
+                
+                // If mouse moved more than 2px, it's a drag (reduced threshold for immediate response)
+                if (deltaX > 2 || deltaY > 2) {
+                    if (!toggleHasDragged) {
+                        // Start dragging immediately
+                        toggleHasDragged = true;
+                        isDragging = true;
+                        
+                        // Calculate offset once when drag starts (relative position of click to widget)
+                        const rect = chatWidget.getBoundingClientRect();
+                        xOffset = toggleDragStartX - rect.left;
+                        yOffset = toggleDragStartY - rect.top;
+                    }
+                    
+                    // Continue dragging with fixed offset
+                    drag(e);
+                    return; // Don't process as click
+                }
+            }
+            
+            // Normal drag from header
+            if (isDragging) {
+                drag(e);
+            }
+        });
+        
+        // Global mouseup handler
+        document.addEventListener('mouseup', (e) => {
+            // Handle drag end
+            if (isDragging) {
+                dragEnd(e);
+            }
+            
+            // Handle toggle click if it wasn't a drag
+            if (toggleIsDown && !toggleHasDragged) {
+                // It was just a click (no movement > 3px), toggle the chat
+                if (!isOpen) {
+                    chatContainer.style.display = 'flex';
+                    chatWidget.style.display = 'block';
+                    chatContainer.style.height = 'auto';
+                    chatContainer.style.minHeight = '200px';
+                    isOpen = true;
+                    isMinimized = false;
+                    setTimeout(updateChatHeight, 50);
+                    chatInput.focus();
+                } else {
+                    chatContainer.style.display = 'none';
+                    isOpen = false;
+                    isMinimized = false;
+                }
+            }
+            
+            // Reset toggle drag state
+            toggleIsDown = false;
+            toggleDragStartX = 0;
+            toggleDragStartY = 0;
+            toggleHasDragged = false;
+        });
         
         function dragStart(e) {
             initialX = e.clientX;
@@ -1265,13 +1558,15 @@
                 
                 const maxX = window.innerWidth - chatWidget.offsetWidth;
                 const maxY = window.innerHeight - chatWidget.offsetHeight;
+                // Prevent chat from being cut off by toolbar (minimum 60px from top)
+                const minY = 60;
                 
                 currentX = e.clientX - xOffset;
                 currentY = e.clientY - yOffset;
                 
-                // Constrain to viewport
+                // Constrain to viewport with minimum top margin
                 currentX = Math.max(0, Math.min(currentX, maxX));
-                currentY = Math.max(0, Math.min(currentY, maxY));
+                currentY = Math.max(minY, Math.min(currentY, maxY));
                 
                 chatWidget.style.position = 'fixed';
                 chatWidget.style.right = 'auto';
@@ -1289,23 +1584,32 @@
             }
         }
         
-        // Toggle functionality
-        chatToggle.addEventListener('click', () => {
-            if (!isOpen) {
-                chatContainer.style.display = 'flex';
-                chatWidget.style.display = 'block';
-                isOpen = true;
-            } else if (isMinimized) {
-                chatContainer.classList.remove('minimized');
-                chatContainer.style.display = 'flex';
-                chatContainer.style.height = '500px';
-                isMinimized = false;
-            } else {
-                chatContainer.style.height = '0px';
-                chatContainer.classList.add('minimized');
-                isMinimized = true;
+        // Update container height dynamically based on content
+        function updateChatHeight() {
+            if (!isOpen) return;
+            
+            const messagesHeight = chatMessages.scrollHeight;
+            const headerHeight = chatContainer.querySelector('.chat-header').offsetHeight;
+            const inputHeight = chatContainer.querySelector('.chat-input-area').offsetHeight;
+            const totalContentHeight = messagesHeight + headerHeight + inputHeight;
+            
+            // Set height based on content, but cap at max height
+            const maxHeight = Math.min(window.innerHeight - 100, 600);
+            const desiredHeight = Math.min(totalContentHeight + 20, maxHeight);
+            
+            chatContainer.style.height = desiredHeight + 'px';
+            
+            // Auto-scroll to bottom if near bottom
+            const isNearBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 100;
+            if (isNearBottom) {
+                setTimeout(() => {
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }, 10);
             }
-        });
+        }
+        
+        // Note: Toggle functionality now handled in mouseup event above
+        // This allows the toggle button to be draggable while still toggling on click
         
         closeBtn.addEventListener('click', () => {
             chatContainer.style.display = 'none';
@@ -1313,11 +1617,10 @@
             isMinimized = false;
         });
         
-        minimizeBtn.addEventListener('click', () => {
-            chatContainer.style.height = '0px';
-            chatContainer.classList.add('minimized');
-            isMinimized = true;
-        });
+        // Minimize button removed - toggle button now handles open/close
+        if (minimizeBtn) {
+            minimizeBtn.style.display = 'none';
+        }
         
         // Capture console logs
         const consoleLogs = [];
@@ -1345,12 +1648,190 @@
             consoleLogs.splice(0, consoleLogs.length - 50);
         }
         
+        // Detect if message contains API key setting intent
+        function detectKeySettingIntent(message) {
+            const lowerMessage = message.toLowerCase();
+            const trimmed = message.trim();
+            
+            // Check for natural language patterns
+            const keyPatterns = [
+                /my\s+(?:openai\s+)?api\s+key\s+is/i,
+                /openai\s+key\s+is/i,
+                /api\s+key\s*[:=]/i,
+                /set\s+my\s+(?:openai\s+)?api\s+key/i,
+                /my\s+key\s+is/i,
+            ];
+            
+            if (keyPatterns.some(pattern => pattern.test(message))) {
+                return true;
+            }
+            
+            // Check for direct key patterns
+            // OpenAI keys: sk-proj- or sk- followed by alphanumeric
+            if (/^sk-[a-zA-Z0-9]{20,}$/.test(trimmed) || /^sk-proj-[a-zA-Z0-9]{20,}$/.test(trimmed)) {
+                return true;
+            }
+            
+            // Generic API key pattern: long alphanumeric strings with possible underscores/dashes
+            // Matches strings that are 30+ characters, mostly alphanumeric with some special chars
+            if (/^[a-zA-Z0-9_-]{30,}$/.test(trimmed) && trimmed.length >= 30) {
+                // Looks like a direct API key paste
+                return true;
+            }
+            
+            return false;
+        }
+        
+        // Extract key directly from message (fallback if parser fails)
+        function extractKeyDirectly(message) {
+            const trimmed = message.trim();
+            
+            // OpenAI key pattern: sk- or sk-proj- followed by alphanumeric
+            const openaiMatch = trimmed.match(/sk(?:-proj)?-[a-zA-Z0-9]{20,}/);
+            if (openaiMatch) {
+                return {
+                    key: openaiMatch[0],
+                    provider: 'openai',
+                    confidence: 0.9
+                };
+            }
+            
+            // Generic API key: long alphanumeric string (30+ chars)
+            if (/^[a-zA-Z0-9_-]{30,}$/.test(trimmed)) {
+                return {
+                    key: trimmed,
+                    provider: 'openai', // Default to OpenAI
+                    confidence: 0.7 // Lower confidence for generic keys
+                };
+            }
+            
+            return null;
+        }
+        
+        // Handle API key extraction from natural language
+        async function handleKeyExtraction(message) {
+            try {
+                const trimmed = message.trim();
+                
+                // First, try direct extraction for keys pasted directly
+                const directExtraction = extractKeyDirectly(trimmed);
+                if (directExtraction && directExtraction.confidence >= 0.9) {
+                    // High confidence direct key - save immediately
+                    addMessage('🔑 Detected API key! Saving...', 'bot');
+                    saveAPIKey(directExtraction.key, directExtraction.provider, { confidence_score: directExtraction.confidence });
+                    return;
+                }
+                
+                // Otherwise, try the LLM parser
+                addMessage('🔑 Detected API key setting intent. Extracting key from your message...', 'bot');
+                
+                // Call parse-key endpoint via background script
+                chrome.runtime.sendMessage({
+                    action: 'parse-key',
+                    text: message
+                }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        // If backend parser fails, try direct extraction as fallback
+                        const fallbackKey = extractKeyDirectly(trimmed);
+                        if (fallbackKey) {
+                            addMessage('⚠️ Using fallback key extraction. Please confirm:\n\n' +
+                                     `Provider: ${fallbackKey.provider}\n` +
+                                     `Key: ${fallbackKey.key.substring(0, 10)}...${fallbackKey.key.substring(fallbackKey.key.length - 4)}\n\n` +
+                                     'Would you like to save this key? (Reply "yes" to confirm)', 'bot');
+                            window.pendingAPIKey = fallbackKey.key;
+                            window.pendingProvider = fallbackKey.provider;
+                            return;
+                        }
+                        
+                        addMessage(`❌ Error: ${chrome.runtime.lastError.message}`, 'bot');
+                        return;
+                    }
+                    
+                    if (response && response.api_key && response.api_key !== 'NOT_FOUND') {
+                        // Key found - validate and save
+                        const extractedKey = response.api_key;
+                        const provider = response.key_type || 'openai';
+                        const confidence = response.confidence_score || 0;
+                        
+                        if (confidence < 0.5) {
+                            addMessage('⚠️ Low confidence in extracted key. Please confirm:\n\n' +
+                                     `Provider: ${provider}\n` +
+                                     `Key: ${extractedKey.substring(0, 10)}...${extractedKey.substring(extractedKey.length - 4)}\n\n` +
+                                     'Would you like to save this key? (Reply "yes" to confirm)', 'bot');
+                            // Store pending key for confirmation
+                            window.pendingAPIKey = extractedKey;
+                            window.pendingProvider = provider;
+                            return;
+                        }
+                        
+                        // High confidence - save directly
+                        saveAPIKey(extractedKey, provider, response);
+                    } else {
+                        // Parser returned NOT_FOUND - try direct extraction as fallback
+                        const fallbackKey = extractKeyDirectly(trimmed);
+                        if (fallbackKey) {
+                            addMessage('⚠️ Parser didn\'t find key, but detected a potential key. Please confirm:\n\n' +
+                                     `Provider: ${fallbackKey.provider}\n` +
+                                     `Key: ${fallbackKey.key.substring(0, 10)}...${fallbackKey.key.substring(fallbackKey.key.length - 4)}\n\n` +
+                                     'Would you like to save this key? (Reply "yes" to confirm)', 'bot');
+                            window.pendingAPIKey = fallbackKey.key;
+                            window.pendingProvider = fallbackKey.provider;
+                            return;
+                        }
+                        
+                        addMessage('❌ Could not extract API key from your message.\n\n' +
+                                 'Please try:\n' +
+                                 '- Paste your key directly: "sk-proj-..." or "sk-..."\n' +
+                                 '- Or say: "My OpenAI API key is sk-proj-..."\n\n' +
+                                 'Or set it in Options: Click extension icon → Options', 'bot');
+                    }
+                });
+            } catch (error) {
+                addMessage(`❌ Error extracting key: ${error.message}`, 'bot');
+            }
+        }
+        
+        // Save API key securely
+        function saveAPIKey(key, provider = 'openai', metadata = {}) {
+            const storageKey = provider === 'anthropic' ? 'anthropicKey' : 'openaiKey';
+            const keyPreview = `${key.substring(0, 10)}...${key.substring(key.length - 4)}`;
+            
+            chrome.storage.sync.set({ [storageKey]: key }, () => {
+                // Verify the key was actually saved
+                chrome.storage.sync.get({ [storageKey]: '' }, (items) => {
+                    if (items[storageKey] === key) {
+                        addMessage(`✅ ${provider.toUpperCase()} API key saved and verified!\n\n` +
+                                  `Key: ${keyPreview}\n` +
+                                  `Confidence: ${((metadata.confidence_score || 1) * 100).toFixed(0)}%\n\n` +
+                                  'You can now use AI chat features! Try asking a question.', 'bot');
+                        console.log(`✅ API key saved to chrome.storage.sync as "${storageKey}"`);
+                    } else {
+                        addMessage(`⚠️ Key saved but verification failed. Please try again or set via Options.`, 'bot');
+                    }
+                });
+            });
+        }
+        
         function sendMessage() {
             const message = chatInput.value.trim();
             if (!message) return;
             
             addMessage(message, 'user');
             chatInput.value = '';
+            
+            // Check for key setting intent first
+            if (detectKeySettingIntent(message)) {
+                handleKeyExtraction(message);
+                return;
+            }
+            
+            // Check for confirmation of pending key
+            if (window.pendingAPIKey && (message.toLowerCase() === 'yes' || message.toLowerCase() === 'confirm')) {
+                saveAPIKey(window.pendingAPIKey, window.pendingProvider);
+                window.pendingAPIKey = null;
+                window.pendingProvider = null;
+                return;
+            }
             
             // Get page info
             const pageInfo = {
@@ -1367,10 +1848,12 @@
                 if (!items.openaiKey || items.openaiKey.trim() === '') {
                     addMessage('❌ OpenAI API key not configured!\n\n' +
                               'To enable chat:\n' +
-                              '1. Click the extension icon → Options\n' +
-                              '2. Enter your OpenAI API key\n' +
-                              '3. Click "Save Settings"\n' +
-                              '4. Try chatting again!\n\n' +
+                              'Option 1: Type in chat\n' +
+                              '   "My OpenAI API key is sk-proj-..."\n\n' +
+                              'Option 2: Use Options page\n' +
+                              '   1. Click the extension icon → Options\n' +
+                              '   2. Enter your OpenAI API key\n' +
+                              '   3. Click "Save Settings"\n\n' +
                               'Get your key at: https://platform.openai.com/api-keys', 'bot');
                     return;
                 }
@@ -1417,15 +1900,70 @@
             if (e.key === 'Enter') sendMessage();
         });
         
-        // Image upload for OCR
-        chatUpload.addEventListener('click', () => {
+        // Screenshot capture - camera button takes screenshot of current page
+        chatUpload.addEventListener('click', async () => {
+            try {
+                addMessage('📸 Capturing screenshot of current page...', 'bot');
+                
+                // Request screenshot from background script
+                chrome.runtime.sendMessage({
+                    action: 'capture-screenshot'
+                }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        addMessage(`❌ Error: ${chrome.runtime.lastError.message}`, 'bot');
+                        return;
+                    }
+                    
+                    if (response && response.screenshot) {
+                        // Process the screenshot for OCR
+                        handleScreenshotForOCR(response.screenshot);
+                    } else if (response && response.error) {
+                        addMessage(`❌ Screenshot failed: ${response.error}`, 'bot');
+                    } else {
+                        addMessage('❌ Failed to capture screenshot', 'bot');
+                    }
+                });
+            } catch (error) {
+                addMessage(`❌ Error: ${error.message}`, 'bot');
+            }
+        });
+        
+        // Handle screenshot for OCR processing
+        async function handleScreenshotForOCR(dataUrl) {
+            try {
+                // Send to backend for OCR
+                const response = await fetch(`${backendUrl}/ocr-upload`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: dataUrl })
+                });
+                
+                const data = await response.json();
+                
+                if (data.ocrText) {
+                    addMessage(`📝 Screenshot OCR Text:\n\n${data.ocrText}`, 'bot');
+                    chatInput.value = 'What does this text say?';
+                    addMessage('💡 Tip: Ask questions about the extracted text!', 'bot');
+                } else if (data.error) {
+                    addMessage(`❌ OCR Error: ${data.error}`, 'bot');
+                } else {
+                    addMessage('⚠️ No OCR text could be extracted from this screenshot.', 'bot');
+                }
+            } catch (error) {
+                addMessage(`❌ Failed to process screenshot: ${error.message}`, 'bot');
+            }
+        }
+        
+        // File upload still available via right-click or drag-drop
+        chatUpload.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
             chatUploadInput.click();
         });
         
         // Drag and drop image
         chatContainer.addEventListener('dragover', (e) => {
             e.preventDefault();
-            chatContainer.style.border = '2px dashed #667eea';
+            chatContainer.style.border = '2px dashed rgba(255, 255, 255, 0.3)';
         });
         
         chatContainer.addEventListener('dragleave', () => {
@@ -1512,9 +2050,17 @@
         });
         
         function addMessage(text, type) {
+            // Remove welcome message if it exists and this is the first real message
+            if (chatMessages.children.length === 1 && chatMessages.querySelector('.chat-message.bot') && 
+                chatMessages.querySelector('.chat-message.bot').textContent.includes('Tooltip Companion v1.3.0')) {
+                chatMessages.innerHTML = '';
+            }
+            
             const messageDiv = document.createElement('div');
             messageDiv.className = `chat-message ${type}`;
-            messageDiv.style.marginBottom = '12px';
+            messageDiv.style.marginBottom = '10px';
+            messageDiv.style.wordWrap = 'break-word';
+            messageDiv.style.overflowWrap = 'break-word';
             
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
@@ -1522,20 +2068,35 @@
             if (type === 'user') {
                 messageDiv.style.display = 'flex';
                 messageDiv.style.justifyContent = 'flex-end';
-                contentDiv.style.background = '#667eea';
-                contentDiv.style.color = 'white';
-                contentDiv.style.borderRadius = '18px 18px 4px 18px';
+                if (isDarkMode) {
+                    contentDiv.style.background = 'rgba(255, 255, 255, 0.15)';
+                    contentDiv.style.color = '#ffffff';
+                    contentDiv.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+                } else {
+                    contentDiv.style.background = '#667eea';
+                    contentDiv.style.color = 'white';
+                    contentDiv.style.border = '1px solid #667eea';
+                }
+                contentDiv.style.borderRadius = '12px 12px 4px 12px';
             } else {
-                contentDiv.style.background = '#667eea';
-                contentDiv.style.color = 'white';
-                contentDiv.style.borderRadius = '18px 18px 18px 4px';
+                if (isDarkMode) {
+                    contentDiv.style.background = 'rgba(0, 0, 0, 0.3)';
+                    contentDiv.style.color = '#e8e8e8';
+                    contentDiv.style.border = '1px solid rgba(255, 255, 255, 0.1)';
+                } else {
+                    contentDiv.style.background = 'rgba(102, 126, 234, 0.1)';
+                    contentDiv.style.color = '#1a1a1a';
+                    contentDiv.style.border = '1px solid rgba(102, 126, 234, 0.2)';
+                }
+                contentDiv.style.borderRadius = '12px 12px 12px 4px';
             }
             
             contentDiv.style.padding = '10px 14px';
-            contentDiv.style.maxWidth = '75%';
-            contentDiv.style.fontSize = '14px';
-            contentDiv.style.lineHeight = '1.4';
-            contentDiv.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
+            contentDiv.style.maxWidth = '85%';
+            contentDiv.style.fontSize = '13px';
+            contentDiv.style.lineHeight = '1.5';
+            contentDiv.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
+            contentDiv.style.whiteSpace = 'pre-wrap';
             
             const p = document.createElement('p');
             p.style.margin = '0';
@@ -1546,41 +2107,86 @@
             messageDiv.appendChild(contentDiv);
             chatMessages.appendChild(messageDiv);
             
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            // Update chat height and scroll
+            updateChatHeight();
+            
+            // Smooth scroll to bottom
+            setTimeout(() => {
+                chatMessages.scrollTo({
+                    top: chatMessages.scrollHeight,
+                    behavior: 'smooth'
+                });
+            }, 50);
         }
         
-        // Style inputs on focus
+        // Style inputs on focus (theme-aware)
         chatInput.addEventListener('focus', () => {
-            chatInput.style.borderColor = '#667eea';
-            chatInput.style.boxShadow = '0 0 0 2px rgba(102, 126, 234, 0.1)';
+            if (isDarkMode) {
+                chatInput.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+                chatInput.style.boxShadow = '0 0 0 3px rgba(255, 255, 255, 0.05)';
+                chatInput.style.background = 'rgba(0, 0, 0, 0.4)';
+            } else {
+                chatInput.style.borderColor = '#667eea';
+                chatInput.style.boxShadow = '0 0 0 3px rgba(102, 126, 234, 0.1)';
+                chatInput.style.background = 'rgba(0, 0, 0, 0.04)';
+            }
         });
         
         chatInput.addEventListener('blur', () => {
-            chatInput.style.borderColor = 'rgba(0, 0, 0, 0.08)';
-            chatInput.style.boxShadow = 'none';
+            if (isDarkMode) {
+                chatInput.style.borderColor = 'rgba(255, 255, 255, 0.12)';
+                chatInput.style.boxShadow = 'none';
+                chatInput.style.background = 'rgba(0, 0, 0, 0.3)';
+            } else {
+                chatInput.style.borderColor = 'rgba(0, 0, 0, 0.1)';
+                chatInput.style.boxShadow = 'none';
+                chatInput.style.background = 'rgba(0, 0, 0, 0.03)';
+            }
         });
         
-        // Hover effects
+        // Hover effects (theme-aware)
         chatSend.addEventListener('mouseenter', () => {
             chatSend.style.transform = 'scale(1.05)';
-            chatSend.style.background = '#5a67d8';
-            chatSend.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.3)';
+            if (isDarkMode) {
+                chatSend.style.background = 'rgba(255, 255, 255, 0.2)';
+                chatSend.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+            } else {
+                chatSend.style.background = '#5a67d8';
+                chatSend.style.borderColor = '#5a67d8';
+            }
         });
         chatSend.addEventListener('mouseleave', () => {
             chatSend.style.transform = 'scale(1)';
-            chatSend.style.background = '#667eea';
-            chatSend.style.boxShadow = 'none';
+            if (isDarkMode) {
+                chatSend.style.background = 'rgba(255, 255, 255, 0.15)';
+                chatSend.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+            } else {
+                chatSend.style.background = '#667eea';
+                chatSend.style.borderColor = '#667eea';
+            }
         });
         
         chatUpload.addEventListener('mouseenter', () => {
-            chatUpload.style.background = 'rgba(102, 126, 234, 0.2)';
-            chatUpload.style.borderColor = 'rgba(102, 126, 234, 0.4)';
+            if (isDarkMode) {
+                chatUpload.style.background = 'rgba(255, 255, 255, 0.12)';
+                chatUpload.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+            } else {
+                chatUpload.style.background = 'rgba(102, 126, 234, 0.2)';
+                chatUpload.style.borderColor = 'rgba(102, 126, 234, 0.4)';
+            }
         });
         chatUpload.addEventListener('mouseleave', () => {
-            chatUpload.style.background = 'rgba(102, 126, 234, 0.1)';
-            chatUpload.style.borderColor = 'rgba(102, 126, 234, 0.2)';
+            if (isDarkMode) {
+                chatUpload.style.background = 'rgba(255, 255, 255, 0.08)';
+                chatUpload.style.borderColor = 'rgba(255, 255, 255, 0.12)';
+            } else {
+                chatUpload.style.background = 'rgba(102, 126, 234, 0.1)';
+                chatUpload.style.borderColor = 'rgba(102, 126, 234, 0.2)';
+            }
         });
         
         console.log('✅ Chat widget initialized');
+        console.log('📎 Chat toggle button should be visible at bottom-right of page');
     }
 })();
+
