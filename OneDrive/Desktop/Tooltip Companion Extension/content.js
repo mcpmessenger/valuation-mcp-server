@@ -4,24 +4,42 @@
 (function() {
     'use strict';
     
-    // Load Montserrat font for branding
+    console.log('🚀 Tooltip Companion content script loaded on:', window.location.href);
+    console.log('🚀 Script version: 1.4.1');
+    
+    // Load Montserrat font for branding (with CSP fallback)
+    // Skip on sites with strict CSP (like GitHub) to avoid console errors
     if (!document.getElementById('montserrat-font')) {
-        const link = document.createElement('link');
-        link.id = 'montserrat-font';
-        link.rel = 'preconnect';
-        link.href = 'https://fonts.googleapis.com';
-        document.head.appendChild(link);
+        // Check if we're on a site likely to block external fonts
+        const strictCSPHosts = ['github.com', 'github.io', 'gitlab.com'];
+        const hostname = window.location.hostname;
+        const hasStrictCSP = strictCSPHosts.some(host => hostname.includes(host));
         
-        const link2 = document.createElement('link');
-        link2.rel = 'preconnect';
-        link2.href = 'https://fonts.gstatic.com';
-        link2.crossOrigin = 'anonymous';
-        document.head.appendChild(link2);
-        
-        const link3 = document.createElement('link');
-        link3.rel = 'stylesheet';
-        link3.href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap';
-        document.head.appendChild(link3);
+        if (!hasStrictCSP) {
+            try {
+                const link = document.createElement('link');
+                link.id = 'montserrat-font';
+                link.rel = 'preconnect';
+                link.href = 'https://fonts.googleapis.com';
+                document.head.appendChild(link);
+                
+                const link2 = document.createElement('link');
+                link2.rel = 'preconnect';
+                link2.href = 'https://fonts.gstatic.com';
+                link2.crossOrigin = 'anonymous';
+                document.head.appendChild(link2);
+                
+                const link3 = document.createElement('link');
+                link3.rel = 'stylesheet';
+                link3.href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap';
+                document.head.appendChild(link3);
+            } catch (error) {
+                // Silently fail - will use system fonts
+            }
+        } else {
+            // On sites with strict CSP, skip font loading to avoid console errors
+            // System fonts will be used automatically
+        }
     }
     
         // Configuration
@@ -33,17 +51,35 @@
         const MAX_TOOLTIP_HEIGHT = 300;
     
     // Get backend URL from storage (tooltips always enabled)
-    chrome.storage.sync.get({ backendUrl: 'http://localhost:3000' }, (items) => {
-        const BACKEND_SERVICE_URL = items.backendUrl.replace(/\/$/, ''); // Remove trailing slash
-        
-        // Tooltips are always enabled - no toggle needed
-        console.log('✅ Tooltip Companion is active! (Tooltips always enabled)');
-        console.log(`   Backend Service URL: ${BACKEND_SERVICE_URL}`);
-        
-        // Initialize the tooltip system (always enabled)
-        console.log('🔧 About to call initTooltipSystem...');
-        initTooltipSystem(BACKEND_SERVICE_URL, true);
-        console.log('✅ initTooltipSystem called successfully');
+    console.log('🔧 About to call chrome.storage.sync.get...');
+    console.log('🔧 Current page:', window.location.href);
+    console.log('🔧 Script loaded at:', new Date().toISOString());
+    
+    // Default to cloud backend for production, fallback to localhost for development
+    // Update DEFAULT_BACKEND after deploying to cloud (Railway, Render, etc.)
+    const DEFAULT_BACKEND = 'https://backend.tooltipcompanion.com'; // AWS ALB - Stable DNS (updated 2025-11-03)
+    const DEV_BACKEND = 'http://localhost:3000';
+    
+    chrome.storage.sync.get({ backendUrl: DEFAULT_BACKEND }, (items) => {
+        try {
+            console.log('🔧 Storage callback started');
+            console.log('🔧 Storage items:', items);
+            const BACKEND_SERVICE_URL = items.backendUrl.replace(/\/$/, ''); // Remove trailing slash
+            
+            // Tooltips are always enabled - no toggle needed
+            console.log('✅ Tooltip Companion is active! (Tooltips always enabled)');
+            console.log(`   Backend Service URL: ${BACKEND_SERVICE_URL}`);
+            console.log(`   Current page: ${window.location.href}`);
+            
+            // Initialize the tooltip system (always enabled)
+            console.log('🔧 About to call initTooltipSystem...');
+            console.log('🔧 Function exists:', typeof initTooltipSystem);
+            initTooltipSystem(BACKEND_SERVICE_URL, true);
+            console.log('✅ initTooltipSystem called successfully');
+        } catch (error) {
+            console.error('❌ Error in storage callback:', error);
+            console.error('❌ Error stack:', error.stack);
+        }
     });
     
     // Listen for messages from background script
@@ -93,6 +129,7 @@
     
     function initTooltipSystem(BACKEND_SERVICE_URL, tooltipsEnabled = true) {
         console.log('🎯 initTooltipSystem function called with URL:', BACKEND_SERVICE_URL);
+        console.log('🎯 Current page in initTooltipSystem:', window.location.href);
         // State management - tooltips always enabled
         window.tooltipsEnabled = true;
         const cache = new Map();
@@ -105,6 +142,107 @@
             isVisible: false
         };
         let tooltipDiv = null;
+        
+        // Track recent tooltip events for AI chat context
+        window.tooltipHistory = [];
+        const MAX_TOOLTIP_HISTORY = 10;
+        
+        // Function to log tooltip events for AI context awareness
+        function logTooltipEvent(data) {
+            const event = {
+                timestamp: Date.now(),
+                url: data.url || window.location.href,
+                element: data.element || 'unknown',
+                elementText: data.elementText || '',
+                buttonInfo: data.buttonInfo || null,
+                isButton: data.isButton || false,
+                ocrText: data.ocrText || null // OCR text from screenshot
+            };
+            
+            // Add to history
+            window.tooltipHistory.push(event);
+            
+            // Keep only recent events
+            if (window.tooltipHistory.length > MAX_TOOLTIP_HISTORY) {
+                window.tooltipHistory.shift();
+            }
+            
+            // Log to console for debugging
+            if (data.buttonInfo) {
+                console.log('🔘 Tooltip shown for button:', data.buttonInfo.label || data.buttonInfo.text, '-', data.buttonInfo.purpose);
+            } else {
+                console.log('🔗 Tooltip shown for link:', data.url);
+            }
+            
+            // Log OCR text if available
+            if (data.ocrText) {
+                console.log('📝 Tooltip OCR text extracted:', data.ocrText.substring(0, 100) + (data.ocrText.length > 100 ? '...' : ''));
+            }
+        }
+        
+        // Function to perform OCR on tooltip screenshot
+        async function processTooltipOCR(screenshotUrl, url) {
+            try {
+                // Get base64 data from cache if available, or convert blob URL to data URL
+                let imageData = screenshotUrl;
+                
+                // Check if we have base64 data cached
+                const cacheEntry = cache.get(url);
+                if (cacheEntry && cacheEntry.base64Data) {
+                    // Use cached base64 data if available
+                    imageData = cacheEntry.base64Data;
+                    console.log('📝 Using cached base64 data for OCR');
+                } else if (screenshotUrl && screenshotUrl.startsWith('blob:')) {
+                    // Convert blob URL to base64 data URL for OCR
+                    try {
+                        const response = await fetch(screenshotUrl);
+                        const blob = await response.blob();
+                        const base64Promise = new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(blob);
+                        });
+                        imageData = await base64Promise;
+                        console.log('📝 Converted blob URL to base64 for OCR');
+                    } catch (convertError) {
+                        console.warn('⚠️ Failed to convert blob to base64:', convertError);
+                        return null; // Skip OCR if conversion fails
+                    }
+                }
+                
+                // Send to backend for OCR via background script proxy
+                const response = await new Promise((resolve, reject) => {
+                    if (!chrome.runtime?.id) {
+                        reject(new Error('Extension context invalidated'));
+                        return;
+                    }
+                    
+                    chrome.runtime.sendMessage(
+                        { action: 'ocr-upload', image: imageData },
+                        (response) => {
+                            if (chrome.runtime.lastError) {
+                                reject(new Error(chrome.runtime.lastError.message));
+                            } else if (!response || !response.success) {
+                                reject(new Error(response?.error || 'Failed to process OCR'));
+                            } else {
+                                resolve(response);
+                            }
+                        }
+                    );
+                });
+                
+                const ocrText = response.data?.ocrText || null;
+                if (ocrText) {
+                    console.log('✅ Tooltip OCR completed for:', url);
+                    return ocrText;
+                }
+                return null;
+            } catch (error) {
+                console.warn('⚠️ Tooltip OCR failed:', error.message);
+                return null; // Silent fail - OCR is optional
+            }
+        }
         
         // IndexedDB for persistent storage
         let db = null;
@@ -170,19 +308,61 @@
             return tooltipDiv;
         }
         
-        // Show tooltip with screenshot
-        function showTooltip(x, y, screenshotUrl) {
+        // Show tooltip with cognitive summary first, then screenshot
+        function showTooltip(x, y, screenshotUrl, analysis) {
             if (!tooltipDiv) {
                 tooltipDiv = createTooltipElement();
             }
             
-            // Update tooltip content with error handling
-            if (screenshotUrl) {
+            // Show cognitive summary if available, otherwise show screenshot or loading
+            if (analysis && analysis.pageType !== 'unknown') {
+                // Hybrid Tooltip: Show cognitive summary first, screenshot loads in background
+                const pageTypeIcon = getPageTypeIcon(analysis.pageType);
+                const keyTopics = analysis.keyTopics && analysis.keyTopics.length > 0 
+                    ? analysis.keyTopics.slice(0, 3).join(' • ') 
+                    : 'General content';
+                const confidence = Math.round(analysis.confidence * 100);
+                
+                let summaryHTML = `
+                    <div style="padding: 14px; font-family: 'Montserrat', sans-serif;">
+                        <div style="font-weight: 600; font-size: 13px; color: rgba(255, 255, 255, 0.95); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                            ${pageTypeIcon} <span style="text-transform: capitalize;">${analysis.pageType}</span>
+                            ${confidence > 50 ? `<span style="font-size: 10px; color: rgba(255, 255, 255, 0.5); font-weight: normal;">(${confidence}%)</span>` : ''}
+                        </div>
+                        ${analysis.keyTopics && analysis.keyTopics.length > 0 ? `
+                            <div style="font-size: 11px; color: rgba(255, 255, 255, 0.75); margin-bottom: 6px;">
+                                📌 ${keyTopics}
+                            </div>
+                        ` : ''}
+                        ${analysis.suggestedActions && analysis.suggestedActions.length > 0 ? `
+                            <div style="font-size: 10px; color: rgba(255, 255, 255, 0.6); margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.1);">
+                                💡 ${analysis.suggestedActions[0]}
+                            </div>
+                        ` : ''}
+                        ${screenshotUrl ? `
+                            <div id="tooltip-screenshot-container" style="margin-top: 10px; display: none;">
+                                <img src="${screenshotUrl}" 
+                                    style="display: block; width: 100%; height: auto; max-height: 200px; object-fit: cover; border-radius: 8px;" 
+                                    alt="Preview" 
+                                    onload="this.parentElement.style.display='block';"
+                                    onerror="this.parentElement.style.display='none';">
+                            </div>
+                        ` : `
+                            <div style="margin-top: 8px; padding: 8px; background: rgba(255, 255, 255, 0.05); border-radius: 6px; font-size: 10px; color: rgba(255, 255, 255, 0.5); text-align: center;">
+                                📸 Loading preview...
+                            </div>
+                        `}
+                    </div>
+                `;
+                tooltipDiv.innerHTML = summaryHTML;
+            } else if (screenshotUrl) {
+                // Fallback: Show screenshot directly if no analysis available
                 tooltipDiv.innerHTML = `<img src="${screenshotUrl}" 
                     style="display: block; width: 100%; height: auto; max-height: ${MAX_TOOLTIP_HEIGHT}px; object-fit: cover;" 
                     alt="Link preview" 
                     onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=&quot;padding: 20px; text-align: center; color: rgba(244, 67, 54, 0.9); font-family: Montserrat, sans-serif;&quot;>⚠️ Failed to load preview</div>'">`;
             } else {
+                // Loading state
                 tooltipDiv.innerHTML = `<div style="padding: 20px; text-align: center; color: rgba(255, 255, 255, 0.7); font-family: Montserrat, sans-serif;">Loading preview...</div>`;
             }
             
@@ -220,6 +400,41 @@
             activeTooltip.displayStartTime = Date.now();
         }
         
+        // Helper function to get icon for page type
+        function getPageTypeIcon(pageType) {
+            const icons = {
+                'login': '🔐',
+                'ecommerce': '🛒',
+                'banking': '🏦',
+                'news': '📰',
+                'contact': '📞',
+                'unknown': '🌐'
+            };
+            return icons[pageType] || icons['unknown'];
+        }
+        
+        // Update tooltip with screenshot when it loads (for hybrid tooltip)
+        function updateTooltipWithScreenshot(screenshotUrl) {
+            if (!tooltipDiv || !activeTooltip.isVisible) return;
+            
+            const container = tooltipDiv.querySelector('#tooltip-screenshot-container');
+            if (container) {
+                // Update the loading indicator with actual screenshot
+                container.innerHTML = `
+                    <img src="${screenshotUrl}" 
+                        style="display: block; width: 100%; height: auto; max-height: 200px; object-fit: cover; border-radius: 8px;" 
+                        alt="Preview"
+                        onerror="this.parentElement.style.display='none';">
+                `;
+                container.style.display = 'block';
+            } else {
+                // Fallback: If no container exists, replace entire content
+                tooltipDiv.innerHTML = `<img src="${screenshotUrl}" 
+                    style="display: block; width: 100%; height: auto; max-height: ${MAX_TOOLTIP_HEIGHT}px; object-fit: cover;" 
+                    alt="Link preview">`;
+            }
+        }
+        
         // Hide tooltip
         function hideTooltip() {
             // Check minimum display time
@@ -252,60 +467,114 @@
             return cacheEntry && (Date.now() - cacheEntry.timestamp) < CACHE_TTL;
         }
         
-        // Fetch screenshot from backend with retry mechanism
-        async function fetchScreenshot(url, retryCount = 0) {
+        // Helper function to check if extension context is valid
+        function isExtensionContextValid() {
+            try {
+                return !!(chrome.runtime && chrome.runtime.id);
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // Fetch context (screenshot + analysis) from backend with retry mechanism
+        // Uses background script proxy to avoid Mixed Content issues on HTTPS pages
+        // This replaces separate screenshot and analysis calls for better performance
+        async function fetchContext(url, retryCount = 0) {
             const maxRetries = 2;
             const retryDelay = Math.pow(2, retryCount) * 1000; // Exponential backoff: 1s, 2s, 4s
             
+            // Check extension context before attempting fetch
+            if (!isExtensionContextValid()) {
+                console.log(`ℹ️ Extension was reloaded. Please reload this page to enable tooltips.`);
+                throw new Error('Extension context invalidated. Please reload this page.');
+            }
+            
             try {
-                console.log(`📸 Fetching screenshot for: ${url}${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`);
+                console.log(`📸 Fetching context (screenshot + analysis) for: ${url}${retryCount > 0 ? ` (attempt ${retryCount + 1})` : ''}`);
+                console.log(`📸 Using consolidated /context endpoint via background script`);
                 
-                const response = await fetch(`${BACKEND_SERVICE_URL}/capture`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url })
+                // Use background script to proxy the request (bypasses Mixed Content restrictions)
+                const response = await new Promise((resolve, reject) => {
+                    // Double-check extension context is still valid
+                    if (!isExtensionContextValid()) {
+                        reject(new Error('Extension context invalidated. Please reload this page.'));
+                        return;
+                    }
+                    
+                    chrome.runtime.sendMessage(
+                        { action: 'fetch-context', url: url },
+                        (response) => {
+                            if (chrome.runtime.lastError) {
+                                const errorMsg = chrome.runtime.lastError.message;
+                                // Handle extension context invalidated specifically
+                                if (errorMsg.includes('Extension context invalidated') || 
+                                    errorMsg.includes('message port closed')) {
+                                    reject(new Error('Extension was reloaded. Please reload this page to continue.'));
+                                } else {
+                                    reject(new Error(errorMsg));
+                                }
+                            } else if (!response || !response.success) {
+                                reject(new Error(response?.error || 'Failed to fetch context'));
+                            } else {
+                                resolve(response);
+                            }
+                        }
+                    );
                 });
                 
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                console.log(`📸 Context response received from background proxy`);
                 
-                const data = await response.json();
-                console.log(`✅ Received response, converting to blob...`);
+                const data = response.data;
+                console.log(`✅ Received context data, processing screenshot and analysis...`);
                 
-                // Handle different response formats and convert to blob
-                let base64Data;
-                if (typeof data === 'string') {
-                    base64Data = data;
-                } else if (data.screenshot) {
-                    base64Data = data.screenshot;
-                } else if (data.url) {
-                    base64Data = data.url;
-                } else if (data.body && data.body.screenshot) {
-                    base64Data = data.body.screenshot;
+                // Extract screenshot URL or base64, analysis, and text from response
+                const screenshotUrlOrData = data.screenshotUrl || data.screenshot;
+                const analysis = data.analysis || {
+                    pageType: 'unknown',
+                    keyTopics: [],
+                    suggestedActions: [],
+                    confidence: 0
+                };
+                const extractedText = data.text || '';
+                
+                let finalScreenshotUrl;
+                let base64DataForStorage = null;
+                
+                // Check if screenshot is a URL (new format) or base64 (old format for backward compatibility)
+                if (screenshotUrlOrData && !screenshotUrlOrData.startsWith('data:image/') && (screenshotUrlOrData.startsWith('http://') || screenshotUrlOrData.startsWith('https://') || screenshotUrlOrData.startsWith('/'))) {
+                    // New format: URL reference
+                    // Resolve relative URLs to absolute
+                    if (screenshotUrlOrData.startsWith('/')) {
+                        // Relative URL - construct absolute URL using backend URL
+                        const backendBase = BACKEND_SERVICE_URL.replace(/\/$/, '');
+                        finalScreenshotUrl = backendBase + screenshotUrlOrData;
+                    } else {
+                        finalScreenshotUrl = screenshotUrlOrData;
+                    }
+                    console.log(`✅ Screenshot URL received: ${finalScreenshotUrl}`);
+                } else if (screenshotUrlOrData && screenshotUrlOrData.startsWith('data:image/')) {
+                    // Old format: base64 data URL (backward compatibility)
+                    console.log(`⚠️ Received base64 screenshot (old format), converting to blob URL`);
+                    base64DataForStorage = screenshotUrlOrData;
+                    
+                    // Extract base64 data from data URL
+                    const commaIndex = screenshotUrlOrData.indexOf(',');
+                    const base64String = screenshotUrlOrData.substring(commaIndex + 1);
+                    
+                    // Convert base64 to blob
+                    const binaryString = atob(base64String);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    const blob = new Blob([bytes], { type: 'image/png' });
+                    finalScreenshotUrl = URL.createObjectURL(blob);
+                    console.log(`✅ Converted base64 to blob URL`);
                 } else {
-                    throw new Error('Invalid response format');
+                    throw new Error('No screenshot data or URL in response');
                 }
                 
-                // Extract base64 data from data URL if present
-                let base64String;
-                if (base64Data.startsWith('data:image/')) {
-                    // Extract just the base64 part after the comma
-                    const commaIndex = base64Data.indexOf(',');
-                    base64String = base64Data.substring(commaIndex + 1);
-                } else {
-                    base64String = base64Data;
-                }
-                
-                // Convert base64 to blob
-                const binaryString = atob(base64String);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
-                }
-                const blob = new Blob([bytes], { type: 'image/png' });
-                const blobUrl = URL.createObjectURL(blob);
-                console.log(`✅ Blob URL created: ${blobUrl.substring(0, 50)}...`);
+                console.log(`📊 Analysis received: ${analysis.pageType} (confidence: ${Math.round(analysis.confidence * 100)}%)`);
                 
                 // Clean up old blob URLs to prevent memory leaks
                 const cacheEntry = cache.get(url);
@@ -313,33 +582,100 @@
                     URL.revokeObjectURL(cacheEntry.screenshotUrl);
                 }
                 
-                // Cache the blob URL
+                // Cache screenshot URL, analysis, and text
                 cache.set(url, {
-                    screenshotUrl: blobUrl,
+                    screenshotUrl: finalScreenshotUrl,
+                    base64Data: base64DataForStorage,  // Store base64 only if we received it (old format)
+                    analysis: analysis,               // Store analysis for cognitive summary
+                    text: extractedText,              // Store extracted text
                     timestamp: Date.now()
                 });
                 
-                // Also save to IndexedDB for persistence (save base64 data, not blob URL)
-                await saveToIndexedDB(url, base64Data);
-                
-                console.log(`✅ Screenshot cached successfully`);
-                return blobUrl;
-                
-            } catch (error) {
-                console.error(`Failed to fetch screenshot for ${url}:`, error);
-                
-                // Retry logic for certain types of errors
-                if (retryCount < maxRetries && (
-                    error.message.includes('timeout') || 
-                    error.message.includes('Timeout') ||
-                    error.message.includes('500') ||
-                    error.message.includes('Failed to fetch')
-                )) {
-                    console.log(`🔄 Retrying in ${retryDelay}ms... (${retryCount + 1}/${maxRetries})`);
-                    await new Promise(resolve => setTimeout(resolve, retryDelay));
-                    return fetchScreenshot(url, retryCount + 1);
+                // Also save to IndexedDB for persistence (save base64 if available, otherwise store URL)
+                if (base64DataForStorage) {
+                    await saveToIndexedDB(url, base64DataForStorage);
                 }
                 
+                console.log(`✅ Context cached successfully (screenshot + analysis)`);
+                return {
+                    screenshotUrl: finalScreenshotUrl,
+                    analysis: analysis,
+                    text: extractedText
+                };
+                
+            } catch (error) {
+                // Handle extension context invalidation gracefully (don't log as error)
+                if (error.message.includes('Extension context invalidated') || 
+                    error.message.includes('Extension was reloaded') ||
+                    error.message.includes('message port closed')) {
+                    console.log(`ℹ️ Extension was reloaded. Reload this page to enable tooltips.`);
+                    // Don't retry - user needs to reload page
+                    throw error;
+                }
+                
+                console.error(`❌ Failed to fetch context for ${url}:`, error);
+                
+                // Provide helpful error messages based on error type and HTTP status
+                let errorMessage = error.message;
+                const isTimeout = error.message.includes('504') || 
+                                 error.message.includes('timeout') || 
+                                 error.message.includes('Timeout') ||
+                                 error.message.includes('Page load timeout');
+                const is403 = error.message.includes('403') || error.message.includes('blocked');
+                const is404 = error.message.includes('404') || error.message.includes('not found');
+                const is500 = error.message.includes('500') || error.message.includes('Internal Server');
+                const isFailedFetch = error.message.includes('Failed to fetch');
+                
+                if (isTimeout) {
+                    errorMessage = '⏱️ Page load timeout: This page took too long to load. The site may be slow, blocking automated access, or require authentication.';
+                } else if (is403) {
+                    errorMessage = '🚫 Access denied: This site blocks automated access. Try visiting the page manually in your browser first.';
+                } else if (is404) {
+                    errorMessage = '❌ Page not found: The requested URL does not exist or is no longer available.';
+                } else if (is500) {
+                    errorMessage = '🔧 Backend server error: There was a problem processing this request. Please try again later.';
+                } else if (error.message.includes('484')) {
+                    errorMessage = '⚠️ Invalid backend response: Check your backend URL in extension settings.';
+                } else if (isFailedFetch) {
+                    errorMessage = '🌐 Network error: Backend may be unreachable. Check your internet connection and backend URL settings.';
+                }
+                
+                console.error(`❌ Error details:`, {
+                    message: errorMessage,
+                    originalError: error.message,
+                    backendUrl: BACKEND_SERVICE_URL,
+                    url: url,
+                    retryCount: retryCount,
+                    note: 'Request proxied through background script to avoid Mixed Content'
+                });
+                
+                // Don't retry if extension context is invalidated
+                if (error.message.includes('Extension context invalidated') || 
+                    error.message.includes('Extension was reloaded') ||
+                    error.message.includes('message port closed')) {
+                    throw error; // Stop retrying, user needs to reload page
+                }
+                
+                // Don't retry for 403 (blocked) or 404 (not found) - these won't succeed on retry
+                // Only retry for timeout, 500 errors, or network failures
+                if (retryCount < maxRetries && !is403 && !is404 && (isTimeout || is500 || isFailedFetch)) {
+                    console.log(`🔄 Retrying in ${retryDelay / 1000}s... (attempt ${retryCount + 2}/${maxRetries + 1})`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    return fetchContext(url, retryCount + 1);
+                }
+                
+                throw error;
+            }
+        }
+
+        // Fetch screenshot from backend with retry mechanism (backward compatibility)
+        // DEPRECATED: Use fetchContext() instead for better performance
+        async function fetchScreenshot(url, retryCount = 0) {
+            // Redirect to fetchContext but only return screenshot URL for compatibility
+            try {
+                const context = await fetchContext(url, retryCount);
+                return context.screenshotUrl;
+            } catch (error) {
                 throw error;
             }
         }
@@ -387,9 +723,10 @@
                                 
                                 console.log(`✅ Converted IndexedDB data to blob: ${url}`);
                                 
-                                // Also update memory cache
+                                // Also update memory cache (store both blob URL and base64 data)
                                 cache.set(url, {
                                     screenshotUrl: blobUrl,
+                                    base64Data: base64Data, // Store original base64 for OCR
                                     timestamp: request.result.timestamp
                                 });
                                 
@@ -430,26 +767,41 @@
             }
         }
         
-        // Get screenshot (from IndexedDB, cache, or fetch)
-        async function getScreenshot(url) {
+        // Get context (screenshot + analysis) from cache or fetch
+        async function getContext(url) {
             // Check memory cache first
             const cacheEntry = cache.get(url);
             if (isCacheValid(cacheEntry)) {
                 console.log(`💾 Memory cache hit: ${url}`);
-                return cacheEntry.screenshotUrl;
+                return {
+                    screenshotUrl: cacheEntry.screenshotUrl,
+                    analysis: cacheEntry.analysis || null,
+                    text: cacheEntry.text || ''
+                };
             }
             
-            // Try IndexedDB
+            // Try IndexedDB (but we need to fetch context if analysis not in cache)
             const indexedDBScreenshot = await loadFromIndexedDB(url);
-            if (indexedDBScreenshot) {
-                return indexedDBScreenshot;
+            if (indexedDBScreenshot && cacheEntry && cacheEntry.analysis) {
+                return {
+                    screenshotUrl: indexedDBScreenshot,
+                    analysis: cacheEntry.analysis,
+                    text: cacheEntry.text || ''
+                };
             }
             
-            // Fetch from backend
-            console.log(`🌐 Fetching from backend: ${url}`);
-            const screenshotUrl = await fetchScreenshot(url);
+            // Fetch from backend (new consolidated endpoint)
+            console.log(`🌐 Fetching context from backend: ${url}`);
+            const context = await fetchContext(url);
             
-            return screenshotUrl;
+            return context;
+        }
+        
+        // Get screenshot (from IndexedDB, cache, or fetch) - backward compatibility
+        // DEPRECATED: Use getContext() instead
+        async function getScreenshot(url) {
+            const context = await getContext(url);
+            return context.screenshotUrl;
         }
         
         // Extract info from local button
@@ -520,6 +872,15 @@
                 tooltipDiv = createTooltipElement();
             }
             
+            // Log tooltip event for AI awareness
+            logTooltipEvent({
+                url: window.location.href,
+                element: 'button',
+                elementText: buttonInfo.label || buttonInfo.text || '',
+                buttonInfo: buttonInfo,
+                isButton: true
+            });
+            
                     const stateIcon = buttonInfo.state === 'disabled' ? '❌' : '✅';
             const typeIcon = buttonInfo.type === 'submit' ? '📤' : 
                             buttonInfo.type === 'reset' ? '🔄' : '🔘';
@@ -569,6 +930,7 @@
         
         // Handle link hover
         function handleLinkHover(event) {
+            console.log('🔗 Link hover detected!', event.currentTarget?.href || event.currentTarget);
             // Tooltips are always enabled
             
             const element = event.currentTarget;
@@ -661,48 +1023,109 @@
             // Check cache first
             const cacheEntry = cache.get(url);
             if (cacheEntry && isCacheValid(cacheEntry)) {
-                // Cached - show after delay
+                // Cached - show after delay with cognitive summary
                 activeTooltip.timeout = setTimeout(() => {
                     if (activeTooltip.element === element && activeTooltip.currentUrl === url && !activeTooltip.isVisible) {
-                        showTooltip(event.clientX, event.clientY, cacheEntry.screenshotUrl);
+                        // Show tooltip with cognitive summary and cached screenshot
+                        showTooltip(event.clientX, event.clientY, cacheEntry.screenshotUrl, cacheEntry.analysis);
+                        // Log tooltip event for AI awareness
+                        logTooltipEvent({
+                            url: url,
+                            element: element.tagName.toLowerCase(),
+                            elementText: element.textContent?.trim() || '',
+                            ocrText: cacheEntry.text || null
+                        });
+                        
+                        // Show proactive information if available and chat is open
+                        if (cacheEntry.analysis && cacheEntry.text && typeof window.addProactiveOCRSummary === 'function') {
+                            setTimeout(() => {
+                                window.addProactiveOCRSummary(cacheEntry.text, url);
+                                
+                                // Also show analysis insights
+                                if (cacheEntry.analysis.pageType !== 'unknown') {
+                                    const insights = [];
+                                    if (cacheEntry.analysis.pageType !== 'unknown') {
+                                        insights.push(`Page type: ${cacheEntry.analysis.pageType}`);
+                                    }
+                                    if (cacheEntry.analysis.keyTopics && cacheEntry.analysis.keyTopics.length > 0) {
+                                        insights.push(`Topics: ${cacheEntry.analysis.keyTopics.slice(0, 3).join(', ')}`);
+                                    }
+                                    if (insights.length > 0 && typeof window.addChatMessage === 'function') {
+                                        window.addChatMessage(`🔍 Tooltip Preview Insights:\n${insights.join('\n')}`, 'bot');
+                                    }
+                                }
+                            }, 500);
+                        }
                     }
                 }, HOVER_DELAY);
                 return;
             }
             
-            // Not cached - fetch with delay
+            // Not cached - fetch context with delay
             activeTooltip.timeout = setTimeout(() => {
                 // Only proceed if still on same element and not already visible
                 if (activeTooltip.element === element && activeTooltip.currentUrl === url && !activeTooltip.isVisible) {
-                    // Show loading
-                    showTooltip(event.clientX, event.clientY, null);
+                    // Show loading state immediately (no analysis yet)
+                    showTooltip(event.clientX, event.clientY, null, null);
                     
                     // Set a timeout to hide loading if it takes too long
                     const loadingTimeout = setTimeout(() => {
                         if (tooltipDiv && activeTooltip.isVisible) {
-                            console.warn('Screenshot load timeout, hiding tooltip');
+                            console.warn('Context load timeout, hiding tooltip');
                             hideTooltip();
                         }
                     }, 120000); // 2 minute timeout
                     
-                    // Fetch screenshot
-                    getScreenshot(url)
-                        .then(screenshotUrl => {
+                    // Fetch context (screenshot + analysis)
+                    getContext(url)
+                        .then(context => {
                             clearTimeout(loadingTimeout);
                             // Check if still valid before showing
                             if (activeTooltip.element === element && activeTooltip.currentUrl === url) {
-                                // Replace loading with screenshot
-                                if (tooltipDiv) {
-                                    tooltipDiv.innerHTML = `<img src="${screenshotUrl}" 
-                                        style="display: block; width: 100%; height: auto; max-height: ${MAX_TOOLTIP_HEIGHT}px; object-fit: cover;" 
-                                        alt="Link preview" 
-                                        onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=&quot;padding: 20px; text-align: center; color: rgba(244, 67, 54, 0.9); font-family: Montserrat, sans-serif;&quot;>⚠️ Failed to load preview</div>'">`;
+                                // Show cognitive summary immediately with screenshot loading in background
+                                showTooltip(event.clientX, event.clientY, context.screenshotUrl, context.analysis);
+                                
+                                // Update screenshot when it loads (for hybrid tooltip)
+                                if (context.screenshotUrl) {
+                                    updateTooltipWithScreenshot(context.screenshotUrl);
+                                }
+                                
+                                // Log tooltip event for AI awareness
+                                logTooltipEvent({
+                                    url: url,
+                                    element: element.tagName.toLowerCase(),
+                                    elementText: element.textContent?.trim() || '',
+                                    ocrText: context.text || null
+                                });
+                                
+                                // Show proactive information if chat is available
+                                if (context.analysis && typeof window.addProactiveOCRSummary === 'function') {
+                                    // Show proactive summary with analysis info
+                                    setTimeout(() => {
+                                        if (context.text && context.text.trim().length > 0) {
+                                            window.addProactiveOCRSummary(context.text, url);
+                                        }
+                                        
+                                        // Also show analysis insights proactively
+                                        if (context.analysis && context.analysis.pageType !== 'unknown') {
+                                            const insights = [];
+                                            if (context.analysis.pageType !== 'unknown') {
+                                                insights.push(`Page type: ${context.analysis.pageType}`);
+                                            }
+                                            if (context.analysis.keyTopics && context.analysis.keyTopics.length > 0) {
+                                                insights.push(`Topics: ${context.analysis.keyTopics.slice(0, 3).join(', ')}`);
+                                            }
+                                            if (insights.length > 0 && typeof window.addChatMessage === 'function') {
+                                                window.addChatMessage(`🔍 Tooltip Preview Insights:\n${insights.join('\n')}`, 'bot');
+                                            }
+                                        }
+                                    }, 500); // Small delay to let tooltip render first
                                 }
                             }
                         })
                         .catch(error => {
                             clearTimeout(loadingTimeout);
-                            console.warn('Failed to load screenshot:', error);
+                            console.warn('Failed to load context:', error);
                             if (activeTooltip.element === element && activeTooltip.currentUrl === url && tooltipDiv) {
                                 // Show error message
                                 let errorMessage = '⚠️ Failed to load preview';
@@ -892,6 +1315,7 @@
                 '[data-href], [data-clickable], [data-url], [data-to], [data-path]'
             );
             
+            let attachedCount = 0;
             clickables.forEach(element => {
                 // Skip if already has listeners
                 if (element.dataset.tooltipAttached === 'true') {
@@ -903,8 +1327,12 @@
                     element.dataset.tooltipAttached = 'true';
                     element.addEventListener('mouseenter', handleLinkHover, { capture: true });
                     element.addEventListener('mouseleave', handleLinkLeave, { capture: true });
+                    attachedCount++;
                 }
             });
+            if (attachedCount > 0) {
+                console.log(`✅ Attached tooltip listeners to ${attachedCount} clickable elements`);
+            }
         }
         
         // Observe DOM changes for dynamically added links
@@ -1114,17 +1542,42 @@
             }
         }, 1000);
         
-        // Initialize chat widget
+        // Initialize chat widget (with delay for Gmail)
         console.log('🚀 Initializing chat widget with backend URL:', BACKEND_SERVICE_URL);
-        initChatWidget(BACKEND_SERVICE_URL);
+        const isGmail = window.location.hostname.includes('gmail.com');
+        const delay = isGmail ? 2000 : 0; // 2 second delay for Gmail
+        
+        console.log(`🔧 Gmail detected: ${isGmail}, delay: ${delay}ms`);
+        
+        setTimeout(() => {
+            console.log('🔧 Timeout callback executing...');
+            try {
+                initChatWidget(BACKEND_SERVICE_URL);
+                console.log('✅ Chat widget initialization completed');
+            } catch (error) {
+                console.error('❌ Chat widget initialization failed:', error);
+            }
+        }, delay);
     }
     
     // Initialize floating chat widget
     function initChatWidget(backendUrl) {
         console.log('📎 Creating chat widget with backend URL:', backendUrl);
+        console.log('📎 Current page:', window.location.href);
+        console.log('📎 User agent:', navigator.userAgent);
+        
+        // Check if innerHTML is blocked by CSP
+        try {
+            const testDiv = document.createElement('div');
+            testDiv.innerHTML = '<span>test</span>';
+            console.log('📎 innerHTML test passed');
+        } catch (error) {
+            console.log('📎 innerHTML blocked by CSP:', error.message);
+        }
+        
         // Create minimal chat widget that expands with content
         const chatHTML = `
-            <div id="playwright-chat-widget" style="display: block; position: fixed; bottom: 20px; right: 20px; z-index: 999998; font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+            <div id="playwright-chat-widget" style="display: block; position: fixed; bottom: 20px; right: 20px; z-index: 2147483647; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;">
                 <div class="chat-container" style="position: absolute; bottom: 70px; right: 0; width: 320px; 
                     background: rgba(15, 15, 15, 0.85); 
                     backdrop-filter: blur(20px);
@@ -1227,10 +1680,70 @@
             </div>
         `;
         
-        const chatDiv = document.createElement('div');
-        chatDiv.innerHTML = chatHTML;
-        document.body.appendChild(chatDiv.firstElementChild);
-        console.log('✅ Chat widget HTML added to page');
+        try {
+            const chatDiv = document.createElement('div');
+            chatDiv.innerHTML = chatHTML;
+            document.body.appendChild(chatDiv.firstElementChild);
+            console.log('✅ Chat widget HTML added to page');
+        } catch (error) {
+            console.error('❌ Failed to add chat widget to page:', error);
+            console.log('❌ Error details:', error.message, error.stack);
+            
+            // Try multiple fallback strategies for strict CSP sites
+            const fallbackStrategies = [
+                () => {
+                    const container = document.documentElement;
+                    const chatDiv = document.createElement('div');
+                    chatDiv.innerHTML = chatHTML;
+                    container.appendChild(chatDiv.firstElementChild);
+                    console.log('✅ Chat widget added to documentElement');
+                },
+                () => {
+                    const container = document.querySelector('body') || document.documentElement;
+                    const chatDiv = document.createElement('div');
+                    chatDiv.innerHTML = chatHTML;
+                    container.appendChild(chatDiv.firstElementChild);
+                    console.log('✅ Chat widget added to body fallback');
+                },
+                () => {
+                    // Try creating elements individually instead of innerHTML
+                    const widget = document.createElement('div');
+                    widget.id = 'playwright-chat-widget';
+                    widget.style.cssText = 'display: block; position: fixed; bottom: 20px; right: 20px; z-index: 2147483647; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", Arial, sans-serif;';
+                    
+                    const container = document.createElement('div');
+                    container.className = 'chat-container';
+                    container.style.cssText = 'position: absolute; bottom: 70px; right: 0; width: 320px; background: rgba(15, 15, 15, 0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 20px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 1px rgba(255, 255, 255, 0.1); display: none; flex-direction: column; overflow: hidden; min-width: 280px; max-width: 400px; max-height: calc(100vh - 100px); transition: opacity 0.2s ease-in-out;';
+                    
+                    const toggle = document.createElement('button');
+                    toggle.className = 'chat-toggle';
+                    toggle.id = 'chat-toggle';
+                    toggle.style.cssText = 'width: 56px; height: 56px; border-radius: 0; background: transparent; border: none; color: #333; font-size: 40px; cursor: move; box-shadow: none; transition: all 0.2s; display: flex; align-items: center; justify-content: center; padding: 0; position: relative; overflow: visible; user-select: none;';
+                    toggle.innerHTML = '📎';
+                    
+                    widget.appendChild(container);
+                    widget.appendChild(toggle);
+                    document.body.appendChild(widget);
+                    console.log('✅ Chat widget created with individual elements');
+                }
+            ];
+            
+            let success = false;
+            for (let i = 0; i < fallbackStrategies.length; i++) {
+                try {
+                    fallbackStrategies[i]();
+                    success = true;
+                    break;
+                } catch (fallbackError) {
+                    console.error(`❌ Fallback strategy ${i + 1} failed:`, fallbackError);
+                }
+            }
+            
+            if (!success) {
+                console.error('❌ All fallback strategies failed');
+                return;
+            }
+        }
         
         // Setup chat functionality
         const chatToggle = document.getElementById('chat-toggle');
@@ -1285,6 +1798,13 @@
         const chatSend = document.getElementById('chat-send');
         const chatUpload = document.getElementById('chat-upload');
         const chatUploadInput = document.getElementById('chat-upload-input');
+        
+        // Verify button exists
+        if (!chatUpload) {
+            console.error('❌ Chat upload button not found!');
+        } else {
+            console.log('✅ Chat upload button found');
+        }
         const chatMessages = document.getElementById('chat-messages');
         const closeBtn = chatWidget.querySelector('.chat-close');
         const minimizeBtn = chatWidget.querySelector('.chat-minimize');
@@ -1726,7 +2246,14 @@
                 }
                 
                 // Otherwise, try the LLM parser
-                addMessage('🔑 Detected API key setting intent. Extracting key from your message...', 'bot');
+                addMessage('🔑 Detected API key setting intent. Extracting key from your message...\n\n' +
+                          'Note: Chat works without a key (uses backend default). Setting your own key is optional.', 'bot');
+                
+                // Check if extension context is still valid
+                if (!chrome.runtime?.id) {
+                    addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
+                    return;
+                }
                 
                 // Call parse-key endpoint via background script
                 chrome.runtime.sendMessage({
@@ -1734,6 +2261,12 @@
                     text: message
                 }, (response) => {
                     if (chrome.runtime.lastError) {
+                        const errorMsg = chrome.runtime.lastError.message;
+                        if (errorMsg.includes('Extension context invalidated') || 
+                            errorMsg.includes('message port closed')) {
+                            addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
+                            return;
+                        }
                         // If backend parser fails, try direct extraction as fallback
                         const fallbackKey = extractKeyDirectly(trimmed);
                         if (fallbackKey) {
@@ -1746,7 +2279,7 @@
                             return;
                         }
                         
-                        addMessage(`❌ Error: ${chrome.runtime.lastError.message}`, 'bot');
+                        addMessage(`❌ Error: ${errorMsg}`, 'bot');
                         return;
                     }
                     
@@ -1843,59 +2376,76 @@
                 description: document.querySelector('meta[name="description"]')?.content
             };
             
-            // Get API key from storage
-            chrome.storage.sync.get({ openaiKey: '' }, (items) => {
-                console.log('🔑 API Key from storage:', items.openaiKey ? 'Set' : 'Not set');
-                
-                // Check if API key is missing and show clear error
-                if (!items.openaiKey || items.openaiKey.trim() === '') {
-                    addMessage('❌ OpenAI API key not configured!\n\n' +
-                              'To enable chat:\n' +
-                              'Option 1: Type in chat\n' +
-                              '   "My OpenAI API key is sk-proj-..."\n\n' +
-                              'Option 2: Use Options page\n' +
-                              '   1. Click the extension icon → Options\n' +
-                              '   2. Enter your OpenAI API key\n' +
-                              '   3. Click "Save Settings"\n\n' +
-                              'Get your key at: https://platform.openai.com/api-keys', 'bot');
+            // Get API key from storage (optional - backend has default key)
+            try {
+                if (!chrome.runtime?.id) {
+                    addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
                     return;
                 }
                 
-                chrome.runtime.sendMessage({
+                chrome.storage.sync.get({ openaiKey: '' }, (items) => {
+                    // Check for runtime errors (extension context invalidated)
+                    if (chrome.runtime.lastError) {
+                        const errorMsg = chrome.runtime.lastError.message;
+                        console.error('❌ Storage error:', errorMsg);
+                        if (errorMsg.includes('Extension context invalidated') || 
+                            errorMsg.includes('message port closed')) {
+                            addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
+                            return;
+                        }
+                        // For other errors, continue without API key (backend has default)
+                    }
+                    
+                    const userApiKey = items?.openaiKey || '';
+                    console.log('🔑 API Key from storage:', userApiKey ? `Set (${userApiKey.substring(0, 10)}...)` : 'Not set (will use backend default)');
+                    
+                    // Check if extension context is still valid
+                    if (!chrome.runtime?.id) {
+                        addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
+                        return;
+                    }
+                    
+                    // Send chat message (backend will use default key if user key not provided)
+                    console.log('📤 Sending chat message with API key:', userApiKey ? 'User key provided' : 'No user key (backend will use default)');
+                    chrome.runtime.sendMessage({
                     action: 'chat',
                     message: message,
                     url: window.location.href,
                     consoleLogs: consoleLogs.slice(-10), // Last 10 console entries
                     pageInfo: pageInfo,
-                    openaiKey: items.openaiKey || ''
+                    tooltipHistory: window.tooltipHistory || [], // Recent tooltip events for context
+                    openaiKey: userApiKey // Optional - backend has default
                 }, (response) => {
                     console.log('📨 Chat response received:', response);
                     
                     if (chrome.runtime.lastError) {
-                        console.error('❌ Runtime error:', chrome.runtime.lastError.message);
-                        addMessage('Error: ' + chrome.runtime.lastError.message, 'bot');
+                        const errorMsg = chrome.runtime.lastError.message;
+                        console.error('❌ Runtime error:', errorMsg);
+                        if (errorMsg.includes('Extension context invalidated') || 
+                            errorMsg.includes('message port closed')) {
+                            addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
+                        } else {
+                            addMessage('Error: ' + errorMsg, 'bot');
+                        }
                         return;
                     }
                     
                     if (response && response.reply) {
-                        // Check if backend returned API key error
-                        if (response.reply.includes('⚠️ OpenAI API key not configured')) {
-                            addMessage('❌ OpenAI API key not configured!\n\n' +
-                                      'To enable chat:\n' +
-                                      '1. Click the extension icon → Options\n' +
-                                      '2. Enter your OpenAI API key\n' +
-                                      '3. Click "Save Settings"\n' +
-                                      '4. Try chatting again!\n\n' +
-                                      'Get your key at: https://platform.openai.com/api-keys', 'bot');
-                        } else {
-                            addMessage(response.reply, 'bot');
-                        }
+                        addMessage(response.reply, 'bot');
                     } else {
                         console.error('❌ No response from backend');
-                        addMessage('Backend service unavailable. Make sure backend is running on localhost:3000', 'bot');
+                        addMessage('❌ Backend service unavailable. Please check your backend URL in extension settings.', 'bot');
                     }
                 });
-            });
+                });
+            } catch (error) {
+                console.error('❌ Error accessing storage or sending message:', error);
+                if (error.message && error.message.includes('Extension context invalidated')) {
+                    addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
+                } else {
+                    addMessage(`❌ Error: ${error.message || 'Unknown error'}`, 'bot');
+                }
+            }
         }
         
         chatSend.addEventListener('click', sendMessage);
@@ -1904,55 +2454,136 @@
         });
         
         // Screenshot capture - camera button takes screenshot of current page
-        chatUpload.addEventListener('click', async () => {
+        if (!chatUpload) {
+            console.error('❌ Cannot attach click handler - chatUpload button not found');
+        } else {
+            console.log('✅ Attaching click handler to chat upload button');
+            chatUpload.addEventListener('click', async () => {
             try {
+                console.log('📸 OCR: User clicked screenshot button');
                 addMessage('📸 Capturing screenshot of current page...', 'bot');
                 
+                // Check if extension context is still valid
+                if (!chrome.runtime?.id) {
+                    console.error('📸 OCR: Extension context invalidated');
+                    addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
+                    return;
+                }
+                
+                console.log('📸 OCR: Requesting screenshot from background script...');
                 // Request screenshot from background script
                 chrome.runtime.sendMessage({
                     action: 'capture-screenshot'
                 }, (response) => {
+                    console.log('📸 OCR: Screenshot capture response:', response);
+                    
                     if (chrome.runtime.lastError) {
-                        addMessage(`❌ Error: ${chrome.runtime.lastError.message}`, 'bot');
+                        const errorMsg = chrome.runtime.lastError.message;
+                        console.error('📸 OCR: Runtime error:', errorMsg);
+                        if (errorMsg.includes('Extension context invalidated') || 
+                            errorMsg.includes('message port closed')) {
+                            addMessage('❌ Extension was reloaded. Please reload this page.', 'bot');
+                        } else {
+                            addMessage(`❌ Error: ${errorMsg}`, 'bot');
+                        }
                         return;
                     }
                     
                     if (response && response.screenshot) {
+                        console.log('📸 OCR: Screenshot received, length:', response.screenshot.length);
                         // Process the screenshot for OCR
                         handleScreenshotForOCR(response.screenshot);
                     } else if (response && response.error) {
+                        console.error('📸 OCR: Screenshot error:', response.error);
                         addMessage(`❌ Screenshot failed: ${response.error}`, 'bot');
                     } else {
+                        console.error('📸 OCR: Failed to capture screenshot - invalid response');
                         addMessage('❌ Failed to capture screenshot', 'bot');
                     }
                 });
             } catch (error) {
+                console.error('📸 OCR: Exception during screenshot capture:', error);
                 addMessage(`❌ Error: ${error.message}`, 'bot');
             }
-        });
+            });
+            console.log('✅ Chat upload click handler attached');
+        }
         
         // Handle screenshot for OCR processing
+        // Uses background script proxy to avoid Mixed Content issues on HTTPS pages
         async function handleScreenshotForOCR(dataUrl) {
             try {
-                // Send to backend for OCR
-                const response = await fetch(`${backendUrl}/ocr-upload`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: dataUrl })
+                console.log('📝 OCR: Starting OCR processing for screenshot');
+                console.log('📝 OCR: Image data URL length:', dataUrl ? dataUrl.length : 0);
+                
+                // Send to backend for OCR via background script proxy
+                const response = await new Promise((resolve, reject) => {
+                    // Check if extension context is still valid
+                    if (!chrome.runtime?.id) {
+                        console.error('📝 OCR: Extension context invalidated');
+                        reject(new Error('Extension context invalidated. Please reload this page.'));
+                        return;
+                    }
+                    
+                    console.log('📝 OCR: Sending OCR request to background script...');
+                    chrome.runtime.sendMessage(
+                        { action: 'ocr-upload', image: dataUrl },
+                        (response) => {
+                            console.log('📝 OCR: Background script response:', response);
+                            
+                            if (chrome.runtime.lastError) {
+                                const errorMsg = chrome.runtime.lastError.message;
+                                console.error('📝 OCR: Runtime error:', errorMsg);
+                                if (errorMsg.includes('Extension context invalidated') || 
+                                    errorMsg.includes('message port closed')) {
+                                    reject(new Error('Extension was reloaded. Please reload this page.'));
+                                } else {
+                                    reject(new Error(errorMsg));
+                                }
+                            } else if (!response || !response.success) {
+                                console.error('📝 OCR: Failed response:', response);
+                                reject(new Error(response?.error || 'Failed to process OCR'));
+                            } else {
+                                console.log('📝 OCR: Success response received');
+                                resolve(response);
+                            }
+                        }
+                    );
                 });
                 
-                const data = await response.json();
+                console.log('📝 OCR: Processing response data...');
                 
-                if (data.ocrText) {
-                    addMessage(`📝 Screenshot OCR Text:\n\n${data.ocrText}`, 'bot');
+                // Handle different response formats
+                // Background returns: { success: true, text: "...", characterCount: ..., data: {...} }
+                // Check for text at multiple possible locations
+                const ocrText = response.text || response.data?.text || response.data?.ocrText || null;
+                const characterCount = response.characterCount || response.data?.characterCount || 0;
+                const error = response.error || response.data?.error || null;
+                
+                console.log('📝 OCR: Response data:', {
+                    hasText: !!ocrText,
+                    textLength: ocrText?.length || 0,
+                    characterCount: characterCount,
+                    hasError: !!error,
+                    responseKeys: Object.keys(response),
+                    dataKeys: response.data ? Object.keys(response.data) : []
+                });
+                
+                if (ocrText && ocrText.trim().length > 0) {
+                    console.log('📝 OCR: Text extracted successfully, length:', ocrText.length, 'chars');
+                    addMessage(`📝 Screenshot OCR Text:\n\n${ocrText}`, 'bot');
                     chatInput.value = 'What does this text say?';
                     addMessage('💡 Tip: Ask questions about the extracted text!', 'bot');
-                } else if (data.error) {
-                    addMessage(`❌ OCR Error: ${data.error}`, 'bot');
+                } else if (error) {
+                    console.error('📝 OCR: Error in response:', error);
+                    addMessage(`❌ OCR Error: ${error}`, 'bot');
                 } else {
+                    console.log('📝 OCR: No text extracted (expected for images without text)');
                     addMessage('⚠️ No OCR text could be extracted from this screenshot.', 'bot');
                 }
             } catch (error) {
+                console.error('📝 OCR: Exception during OCR processing:', error);
+                console.error('📝 OCR: Error stack:', error.stack);
                 addMessage(`❌ Failed to process screenshot: ${error.message}`, 'bot');
             }
         }
@@ -1999,6 +2630,7 @@
         });
         
         // Handle image upload (for drag-drop and paste)
+        // Uses background script proxy to avoid Mixed Content issues on HTTPS pages
         async function handleImageUpload(file) {
             addMessage(`📷 Processing image: ${file.name || 'from clipboard'}`, 'bot');
             
@@ -2008,14 +2640,35 @@
                 const base64Image = e.target.result;
                 
                 try {
-                    // Send to backend for OCR
-                    const response = await fetch(`${backendUrl}/ocr-upload`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ image: base64Image })
+                    // Send to backend for OCR via background script proxy
+                    const response = await new Promise((resolve, reject) => {
+                        // Check if extension context is still valid
+                        if (!chrome.runtime?.id) {
+                            reject(new Error('Extension context invalidated. Please reload this page.'));
+                            return;
+                        }
+                        
+                        chrome.runtime.sendMessage(
+                            { action: 'ocr-upload', image: base64Image },
+                            (response) => {
+                                if (chrome.runtime.lastError) {
+                                    const errorMsg = chrome.runtime.lastError.message;
+                                    if (errorMsg.includes('Extension context invalidated') || 
+                                        errorMsg.includes('message port closed')) {
+                                        reject(new Error('Extension was reloaded. Please reload this page.'));
+                                    } else {
+                                        reject(new Error(errorMsg));
+                                    }
+                                } else if (!response || !response.success) {
+                                    reject(new Error(response?.error || 'Failed to process OCR'));
+                                } else {
+                                    resolve(response);
+                                }
+                            }
+                        );
                     });
                     
-                    const data = await response.json();
+                    const data = response.data;
                     
                     if (data.ocrText) {
                         // Show OCR results
@@ -2109,18 +2762,70 @@
             contentDiv.appendChild(p);
             messageDiv.appendChild(contentDiv);
             chatMessages.appendChild(messageDiv);
+        }
+        
+        // Function to add proactive OCR summaries to chat
+        function addProactiveOCRSummary(ocrText, url) {
+            // Only add if chat is open
+            if (!chatContainer || chatContainer.style.display === 'none') {
+                return;
+            }
+            
+            // Generate a smart summary of the OCR text
+            const summary = generateSmartSummary(ocrText);
+            
+            // Add to chat with a nice format
+            addMessage(summary, 'bot');
             
             // Update chat height and scroll
-            updateChatHeight();
+            if (typeof updateChatHeight === 'function') {
+                updateChatHeight();
+            }
             
             // Smooth scroll to bottom
             setTimeout(() => {
-                chatMessages.scrollTo({
-                    top: chatMessages.scrollHeight,
-                    behavior: 'smooth'
-                });
+                if (chatMessages) {
+                    chatMessages.scrollTo({
+                        top: chatMessages.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                }
             }, 50);
         }
+        
+        // Generate smart summary from OCR text
+        function generateSmartSummary(text) {
+            if (!text || text.trim().length === 0) {
+                return '📝 No text detected in preview.';
+            }
+            
+            // Clean the text
+            const cleanText = text.trim();
+            
+            // If text is short, show it all
+            if (cleanText.length <= 150) {
+                return `📝 Preview Text:\n${cleanText}`;
+            }
+            
+            // If text is medium, show first part
+            if (cleanText.length <= 300) {
+                const lines = cleanText.split('\n').filter(line => line.trim().length > 0);
+                return `📝 Preview Summary:\n${lines.slice(0, 3).join('\n')}...`;
+            }
+            
+            // For long text, extract key phrases
+            const lines = cleanText.split('\n').filter(line => line.trim().length > 0);
+            const firstLines = lines.slice(0, 3);
+            const characterCount = cleanText.length;
+            
+            return `📝 Preview Summary (${characterCount} chars):\n${firstLines.join('\n')}...\n\n💡 Ask me to summarize or explain more!`;
+        }
+        
+        // Expose addMessage function globally so it can be called from tooltip system
+        window.addChatMessage = addMessage;
+        window.addProactiveOCRSummary = addProactiveOCRSummary;
+        window.updateChatHeight = updateChatHeight;
+        window.chatMessages = chatMessages;
         
         // Style inputs on focus (theme-aware)
         chatInput.addEventListener('focus', () => {
@@ -2190,6 +2895,31 @@
         
         console.log('✅ Chat widget initialized');
         console.log('📎 Chat toggle button should be visible at bottom-right of page');
+        
+        // Verify the widget was actually created
+        const verifyToggle = document.getElementById('chat-toggle');
+        const verifyWidget = document.getElementById('playwright-chat-widget');
+        console.log('🔍 Verification - Toggle exists:', !!verifyToggle);
+        console.log('🔍 Verification - Widget exists:', !!verifyWidget);
+        if (verifyToggle) {
+            const computedStyle = window.getComputedStyle(verifyToggle);
+            console.log('🔍 Toggle button styles:', {
+                display: computedStyle.display,
+                visibility: computedStyle.visibility,
+                position: computedStyle.position,
+                bottom: computedStyle.bottom,
+                right: computedStyle.right,
+                width: computedStyle.width,
+                height: computedStyle.height,
+                opacity: computedStyle.opacity,
+                zIndex: computedStyle.zIndex
+            });
+            console.log('🔍 Toggle button element:', verifyToggle);
+            console.log('🔍 Toggle button parent:', verifyToggle.parentElement);
+            
+            // Debug styling removed - chat button should appear normally
+            console.log('🔍 Chat toggle button is ready and visible');
+        }
     }
 })();
 

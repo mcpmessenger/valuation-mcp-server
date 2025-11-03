@@ -1,187 +1,173 @@
-// server.js - Tooltip Companion Backend Service
-// AI-powered screenshots and context-aware assistance for web pages
+// server.js - Playwright Tooltip Backend Service
+// Captures screenshots of web pages on demand
 
-require('dotenv').config();
 const express = require('express');
 const { chromium } = require('playwright');
 const cors = require('cors');
-const OpenAI = require('openai');
-
-// Simple in-memory queue for request management
-class RequestQueue {
-    constructor() {
-        this.queue = [];
-        this.processing = new Set();
-        this.maxConcurrent = 3;
-    }
-    
-    async add(fn, priority = 0) {
-        return new Promise((resolve, reject) => {
-            this.queue.push({ fn, priority, resolve, reject });
-            this.queue.sort((a, b) => b.priority - a.priority);
-            this.process();
-        });
-    }
-    
-    async process() {
-        while (this.queue.length > 0 && this.processing.size < this.maxConcurrent) {
-            const item = this.queue.shift();
-            this.processing.add(item);
-            
-            try {
-                const result = await item.fn();
-                item.resolve(result);
-            } catch (error) {
-                item.reject(error);
-            } finally {
-                this.processing.delete(item);
-            }
-        }
-    }
-    
-    getStats() {
-        return {
-            queueLength: this.queue.length,
-            processing: this.processing.size,
-            maxConcurrent: this.maxConcurrent
-        };
-    }
-}
+const Tesseract = require('tesseract.js');
+const MCPServer = require('./mcp-server');
+const crypto = require('crypto');
+const fs = require('fs').promises;
+const path = require('path');
 
 const app = express();
-
-// Increase body size limit for image uploads (base64 images can be large)
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ limit: '10mb', extended: true }));
-
 const PORT = process.env.PORT || 3000;
 
-// Initialize OpenAI client (optional)
-let openaiClient = null;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// Middleware
+app.use(cors({
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        // Allow chrome extensions
+        if (origin.startsWith('chrome-extension://')) return callback(null, true);
+        
+        // Allow localhost
+        if (origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')) return callback(null, true);
+        
+        // Allow all HTTPS origins (for web pages)
+        if (origin.startsWith('https://')) return callback(null, true);
+        
+        // Allow HTTP for local development
+        if (origin.startsWith('http://')) return callback(null, true);
+        
+        callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+    optionsSuccessStatus: 200
+}));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
+app.use(express.raw({ limit: '100mb' }));
 
-if (OPENAI_API_KEY && OPENAI_API_KEY !== 'YOUR_API_KEY_HERE') {
-    openaiClient = new OpenAI({
-        apiKey: OPENAI_API_KEY
-    });
-    console.log('🤖 OpenAI integration enabled');
+// State
+let browser = null;
+let screenshotCache = new Map();
+let pageAnalysisCache = new Map(); // Cache for page analysis
+let blockedSites = new Set(); // Track sites that blocked us
+let screenshotTokens = new Map(); // Map token -> filepath for signed URLs
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const BLOCKED_TTL = 60 * 60 * 1000; // Don't retry blocked sites for 1 hour
+
+// Screenshot storage configuration
+const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(process.cwd(), 'tmp', 'screenshots');
+const SCREENSHOT_URL_BASE = process.env.SCREENSHOT_URL_BASE || ''; // Base URL for screenshots (set to backend URL in production)
+
+// Ensure screenshot directory exists (non-blocking - won't crash server if it fails)
+async function ensureScreenshotDir() {
+    try {
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        console.log(`[OK] Screenshot directory ready: ${SCREENSHOT_DIR}`);
+        return true;
+    } catch (error) {
+        // Log warning but don't crash - fall back to base64 if needed
+        console.warn(`[WARN] Failed to create screenshot directory: ${error.message}`);
+        console.warn(`[WARN] Screenshots will use base64 encoding instead of file storage`);
+        return false;
+    }
 }
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// Generate secure token for screenshot
+function generateScreenshotToken(url) {
+    const hash = crypto.createHash('sha256');
+    hash.update(url + Date.now().toString());
+    return hash.digest('hex').substring(0, 32);
+}
 
-// Browser Pool Class
-class BrowserPool {
-    constructor(size = 3) {
-        this.size = size;
-        this.instances = [];
-        this.available = [];
-        this.inUse = new Set();
-        this.initialized = false;
+// Save screenshot to disk and return token (falls back to null if disk storage fails)
+async function saveScreenshotToDisk(screenshotBuffer, url) {
+    try {
+        const token = generateScreenshotToken(url);
+        const filename = `${token}.png`;
+        const filepath = path.join(SCREENSHOT_DIR, filename);
+        
+        await fs.writeFile(filepath, screenshotBuffer);
+        
+        // Store token mapping
+        screenshotTokens.set(token, {
+            filepath: filepath,
+            url: url,
+            timestamp: Date.now()
+        });
+        
+        console.log(`💾 Screenshot saved to disk: ${filename}`);
+        return token;
+    } catch (error) {
+        // Don't crash - fall back to base64 encoding
+        console.warn(`⚠️ Failed to save screenshot to disk: ${error.message}`);
+        console.warn(`⚠️ Falling back to base64 encoding for this screenshot`);
+        return null; // Return null to indicate disk save failed
     }
-    
-    async init() {
-        if (this.initialized) return;
+}
+
+// Get screenshot URL from token
+function getScreenshotUrl(token) {
+    if (SCREENSHOT_URL_BASE) {
+        return `${SCREENSHOT_URL_BASE}/screenshot/${token}`;
+    }
+    // Relative URL (will use request host)
+    return `/screenshot/${token}`;
+}
+
+// Clean up old screenshot files
+async function cleanupOldScreenshots() {
+    try {
+        const files = await fs.readdir(SCREENSHOT_DIR);
+        const now = Date.now();
+        let cleaned = 0;
         
-        console.log(`🚀 Initializing browser pool with ${this.size} instances...`);
-        
-        for (let i = 0; i < this.size; i++) {
-            try {
-                const browser = await chromium.launch({
-                    headless: true,
-                    args: [
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-gpu',
-                        '--disable-extensions',
-                        '--disable-logging',
-                        '--disable-software-rasterizer',
-                        '--disable-dev-shm-usage',
-                        '--no-first-run',
-                        '--no-default-browser-check'
-                    ]
-                });
-                this.instances.push(browser);
-                this.available.push(browser);
-                console.log(`✅ Browser instance ${i + 1}/${this.size} created`);
-            } catch (error) {
-                console.error(`❌ Failed to create browser instance ${i + 1}:`, error);
+        for (const file of files) {
+            if (!file.endsWith('.png')) continue;
+            
+            const filepath = path.join(SCREENSHOT_DIR, file);
+            const stats = await fs.stat(filepath);
+            const age = now - stats.mtimeMs;
+            
+            if (age > CACHE_TTL) {
+                await fs.unlink(filepath);
+                cleaned++;
             }
         }
         
-        this.initialized = true;
-        console.log(`✅ Browser pool initialized with ${this.available.length} instances`);
-    }
-    
-    async acquire() {
-        if (!this.initialized) await this.init();
-        
-        // Return available instance if pool has one
-        if (this.available.length > 0) {
-            const instance = this.available.shift();
-            this.inUse.add(instance);
-            console.log(`📥 Browser acquired. Available: ${this.available.length}, In use: ${this.inUse.size}`);
-            return instance;
+        // Clean up token mappings
+        for (const [token, data] of screenshotTokens.entries()) {
+            if (now - data.timestamp > CACHE_TTL) {
+                screenshotTokens.delete(token);
+            }
         }
         
-        // If all busy, create temporary instance (shouldn't happen often)
-        console.log('⚠️ All browser instances busy, creating temporary instance');
-        const instance = await chromium.launch({
+        if (cleaned > 0) {
+            console.log(`🧹 Cleaned up ${cleaned} old screenshot files`);
+        }
+    } catch (error) {
+        console.warn(`⚠️ Screenshot cleanup error:`, error.message);
+    }
+}
+
+// Run cleanup every 10 minutes
+setInterval(cleanupOldScreenshots, 10 * 60 * 1000);
+
+// Initialize browser
+async function initBrowser() {
+    if (!browser) {
+        console.log('[INFO] Initializing Playwright browser...');
+        browser = await chromium.launch({
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
-        return instance;
+        console.log('[OK] Browser initialized');
     }
-    
-    release(instance) {
-        // Check if it's a pool instance or temporary
-        if (this.instances.includes(instance)) {
-            this.inUse.delete(instance);
-            this.available.push(instance);
-            console.log(`📤 Browser released. Available: ${this.available.length}, In use: ${this.inUse.size}`);
-        } else {
-            // Temporary instance - close it
-            instance.close().catch(() => {});
-        }
-    }
-    
-    async shutdown() {
-        console.log('🛑 Shutting down browser pool...');
-        for (const instance of this.instances) {
-            try {
-                await instance.close();
-            } catch (error) {
-                console.error('Error closing browser instance:', error);
-            }
-        }
-        this.instances = [];
-        this.available = [];
-        this.inUse.clear();
-        this.initialized = false;
-    }
-    
-    getStats() {
-        return {
-            totalInstances: this.instances.length,
-            availableInstances: this.available.length,
-            inUseInstances: this.inUse.size,
-            poolSize: this.size,
-            isInitialized: this.initialized
-        };
-    }
+    return browser;
 }
 
-// State
-const browserPool = new BrowserPool(3); // 3 pre-warmed instances
-const requestQueue = new RequestQueue(); // Request queue for managing bursts
-let screenshotCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-// Clean up browser pool on exit
+// Clean up browser on exit
 process.on('SIGINT', async () => {
-    console.log('\n⚠️ Shutting down...');
-    await browserPool.shutdown();
+    console.log('\n[WARN] Shutting down...');
+    if (browser) {
+        await browser.close();
+    }
     process.exit(0);
 });
 
@@ -190,150 +176,246 @@ function isCacheValid(timestamp) {
     return (Date.now() - timestamp) < CACHE_TTL;
 }
 
-// Extract OCR text from screenshot (background processing)
-function extractOCRTextAsync(screenshotDataUrl, url) {
-    // Run asynchronously - don't block
-    setImmediate(async () => {
-        try {
-            const { spawnSync } = require('child_process');
-            const path = require('path');
-            const fs = require('fs');
-            
-            console.log(`🔍 Starting background OCR for ${url}...`);
-            
-            // Save to temp file
-            const tempPath = path.join(__dirname, 'temp_ocr_' + Date.now() + '.png');
-            const base64Data = screenshotDataUrl.split(',')[1];
-            fs.writeFileSync(tempPath, Buffer.from(base64Data, 'base64'));
-            
-            // Run OCR
-            const ocrPath = path.join(__dirname, '..', 'Smart Parser and OCR Integration for API Keys and Annotations', 'ocr_processor.py');
-            
-            const env = { ...process.env };
-            // Ensure PATH exists before checking
-            if (!env.PATH) {
-                env.PATH = 'C:\\Program Files\\Tesseract-OCR';
-            } else if (typeof env.PATH === 'string' && !env.PATH.includes('Tesseract-OCR')) {
-                env.PATH = 'C:\\Program Files\\Tesseract-OCR;' + env.PATH;
-            }
-            
-            const result = spawnSync('python', [ocrPath, tempPath], {
-                encoding: 'utf8',
-                env: env
-            });
-            
-            // Clean up
-            fs.unlinkSync(tempPath);
-            
-            if (result.status === 0 && result.stdout) {
-                try {
-                    const ocrData = JSON.parse(result.stdout);
-                    const ocrText = ocrData.full_text_context || '';
-                    
-                    // Update cache with OCR text
-                    const cacheEntry = screenshotCache.get(url);
-                    if (cacheEntry) {
-                        cacheEntry.ocrText = ocrText;
-                        cacheEntry.ocrTimestamp = Date.now();
-                        console.log(`✅ OCR text extracted and cached for ${url} (${ocrText.length} chars)`);
-                    }
-                } catch (parseError) {
-                    console.error('OCR parse error:', parseError.message);
-                }
-            }
-            
-        } catch (error) {
-            console.error('OCR extraction error:', error.message);
-        }
-    });
+// Extract text from screenshot using OCR
+async function extractTextFromScreenshot(screenshotBuffer) {
+    try {
+        console.log('🔍 Extracting text from screenshot...');
+        const { data: { text } } = await Tesseract.recognize(screenshotBuffer, 'eng', {
+            logger: m => console.log(`OCR: ${m.status} - ${m.progress * 100}%`)
+        });
+        return text.trim();
+    } catch (error) {
+        console.warn('OCR failed:', error.message);
+        return '';
+    }
+}
+
+// Analyze page content and extract key information
+function analyzePageContent(text, url) {
+    const analysis = {
+        pageType: 'unknown',
+        keyTopics: [],
+        suggestedActions: [],
+        confidence: 0
+    };
+    
+    const lowerText = text.toLowerCase();
+    const lowerUrl = url.toLowerCase();
+    
+    // Detect page type
+    if (lowerUrl.includes('login') || lowerText.includes('sign in') || lowerText.includes('password')) {
+        analysis.pageType = 'login';
+        analysis.suggestedActions.push('Login form detected - be careful with credentials');
+    } else if (lowerUrl.includes('checkout') || lowerText.includes('buy now') || lowerText.includes('add to cart')) {
+        analysis.pageType = 'ecommerce';
+        analysis.suggestedActions.push('Shopping page - check prices and reviews');
+    } else if (lowerUrl.includes('bank') || lowerText.includes('account') || lowerText.includes('balance')) {
+        analysis.pageType = 'banking';
+        analysis.suggestedActions.push('Financial page - verify security');
+    } else if (lowerText.includes('news') || lowerText.includes('article')) {
+        analysis.pageType = 'news';
+        analysis.suggestedActions.push('News article - check publication date');
+    } else if (lowerText.includes('contact') || lowerText.includes('phone') || lowerText.includes('email')) {
+        analysis.pageType = 'contact';
+        analysis.suggestedActions.push('Contact information available');
+    }
+    
+    // Extract key topics
+    const topics = [];
+    if (lowerText.includes('price') || lowerText.includes('cost') || lowerText.includes('$')) topics.push('pricing');
+    if (lowerText.includes('review') || lowerText.includes('rating')) topics.push('reviews');
+    if (lowerText.includes('download') || lowerText.includes('install')) topics.push('download');
+    if (lowerText.includes('support') || lowerText.includes('help')) topics.push('support');
+    if (lowerText.includes('privacy') || lowerText.includes('terms')) topics.push('legal');
+    
+    analysis.keyTopics = topics;
+    analysis.confidence = Math.min(0.9, topics.length * 0.2 + (analysis.pageType !== 'unknown' ? 0.3 : 0));
+    
+    return analysis;
 }
 
 // Capture screenshot
 async function captureScreenshot(url) {
-    let browserInstance = null;
-    
     try {
+        // Check if site is blocked
+        const hostname = new URL(url).hostname;
+        if (blockedSites.has(hostname)) {
+            throw new Error(`Site ${hostname} is currently blocked (bot detection). Will retry in 1 hour.`);
+        }
+        
         // Check cache
         const cacheEntry = screenshotCache.get(url);
         if (cacheEntry && isCacheValid(cacheEntry.timestamp)) {
             console.log(`📦 Cache hit: ${url}`);
-            return cacheEntry.screenshot;
+            return cacheEntry.screenshotUrl || cacheEntry.screenshot; // Support both old base64 and new URL format
         }
 
         console.log(`📸 Capturing screenshot: ${url}`);
         
-        // Acquire browser from pool
-        browserInstance = await browserPool.acquire();
-        
+        const browserInstance = await initBrowser();
         const context = await browserInstance.newContext({
-            viewport: { width: 1280, height: 720 }
+            viewport: { width: 800, height: 600 }, // Smaller viewport = faster, smaller images
+            deviceScaleFactor: 1, // Reduce quality slightly for speed
+            // Add user agent to avoid bot detection
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            // Add extra HTTP headers
+            extraHTTPHeaders: {
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            }
         });
         
         const page = await context.newPage();
         
-        // Navigate to URL with extended timeout for slow sites
-        await page.goto(url, { 
-            waitUntil: 'networkidle',
-            timeout: 90000  // 90 seconds for very slow sites like banking portals
+        // Block unnecessary resources to improve performance and reduce bandwidth
+        // This dramatically reduces page load time by skipping images, fonts, media, and tracking scripts
+        await page.route('**/*', (route) => {
+            const request = route.request();
+            const url = request.url();
+            const resourceType = request.resourceType();
+            
+            // Block images
+            if (resourceType === 'image' || /\.(png|jpg|jpeg|webp|gif|svg|ico)(\?.*)?$/i.test(url)) {
+                return route.abort();
+            }
+            
+            // Block fonts
+            if (resourceType === 'font' || /\.(woff|woff2|ttf|otf|eot)(\?.*)?$/i.test(url)) {
+                return route.abort();
+            }
+            
+            // Block media
+            if (resourceType === 'media' || /\.(mp4|webm|ogg|mp3|wav)(\?.*)?$/i.test(url)) {
+                return route.abort();
+            }
+            
+            // Block common tracking and analytics scripts
+            if (/analytics\.js|gtm\.js|ga\.js|facebook\.net|doubleclick\.net|googletagmanager\.com/i.test(url)) {
+                return route.abort();
+            }
+            
+            // Allow everything else
+            route.continue();
         });
         
-        // Wait for page to be fully interactive
-        await page.waitForLoadState('domcontentloaded');
+        // Set default timeout for page operations
+        page.setDefaultTimeout(25000); // 25 seconds for page operations
         
-        // Wait for network to be completely idle (no requests for 500ms)
-        await page.waitForLoadState('networkidle');
+        // Navigate to URL with faster loading strategy
+        await page.goto(url, { 
+            waitUntil: 'domcontentloaded', // Much faster than networkidle
+            timeout: 25000 // 25 seconds - balance between speed and reliability
+        });
         
-        // Additional wait for dynamic content to fully render (esp. important for banking/slow sites)
-        await page.waitForTimeout(3000); // Wait 3 seconds for banking sites with heavy JavaScript
+        // Wait a bit for content to render (faster than networkidle)
+        await page.waitForTimeout(1000); // Wait 1s for dynamic content to render
         
-        // Wait for page to be completely stable
-        await page.waitForTimeout(1000);
-        
-        // Take screenshot
+        // Take screenshot with smaller dimensions
         const screenshot = await page.screenshot({
             fullPage: false,
-            type: 'png'
+            type: 'png',
+            clip: { // Crop to specific area if needed
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600
+            }
         });
         
         // Close context
         await context.close();
         
-        // Convert to base64
-        const base64Screenshot = screenshot.toString('base64');
-        const dataUrl = `data:image/png;base64,${base64Screenshot}`;
+        // Save screenshot to disk and get token (may return null if disk storage fails)
+        const token = await saveScreenshotToDisk(screenshot, url);
         
-        // Cache the result
-        screenshotCache.set(url, {
-            screenshot: dataUrl,
+        // Extract text using OCR
+        const extractedText = await extractTextFromScreenshot(screenshot);
+        
+        // Analyze page content
+        const analysis = analyzePageContent(extractedText, url);
+        
+        // Determine screenshot format: URL if disk storage worked, base64 if it failed
+        let screenshotUrl;
+        let screenshotData;
+        
+        if (token) {
+            // Disk storage succeeded - use URL
+            screenshotUrl = getScreenshotUrl(token);
+        } else {
+            // Disk storage failed - fall back to base64
+            const base64Screenshot = screenshot.toString('base64');
+            screenshotData = `data:image/png;base64,${base64Screenshot}`;
+            screenshotUrl = screenshotData; // Use base64 as URL for backward compatibility
+            console.log(`⚠️ Using base64 encoding (disk storage unavailable)`);
+        }
+        
+        // Cache the result with analysis
+        const newCacheEntry = {
+            screenshotUrl: screenshotUrl,
+            screenshot: screenshotData || null, // Include base64 if available
+            token: token,
             timestamp: Date.now(),
-            ocrText: '', // Will be populated by background OCR
-            ocrTimestamp: null
-        });
+            text: extractedText,
+            analysis: analysis
+        };
+        
+        screenshotCache.set(url, newCacheEntry);
+        pageAnalysisCache.set(url, analysis);
         
         console.log(`✅ Screenshot captured: ${url}`);
-        
-        // Extract OCR text in background (non-blocking)
-        extractOCRTextAsync(dataUrl, url);
-        
-        return dataUrl;
-        
-    } catch (error) {
-        console.error(`❌ Error capturing screenshot for ${url}:`, error.message);
-        throw error;
-    } finally {
-        // Always release browser back to pool
-        if (browserInstance) {
-            browserPool.release(browserInstance);
+        if (token) {
+            console.log(`📸 Screenshot URL: ${screenshotUrl}`);
+        } else {
+            console.log(`📸 Screenshot encoded as base64 (${screenshotData.length} chars)`);
         }
-    }
+        console.log(`📊 Page type: ${analysis.pageType} (confidence: ${Math.round(analysis.confidence * 100)}%)`);
+        console.log(`🔍 Key topics: ${analysis.keyTopics.join(', ') || 'none'}`);
+        
+        return screenshotUrl;
+        
+        } catch (error) {
+            console.error(`❌ Error capturing screenshot for ${url}:`, error.message);
+            
+            // Create a more specific error with better messaging
+            let enhancedError = error;
+            const hostname = new URL(url).hostname;
+            
+            // Check if it's a timeout or navigation error
+            if (error.message.includes('Navigation') || 
+                error.message.includes('timeout') || 
+                error.message.includes('Timeout')) {
+                console.warn(`   ⏱️ Page load timeout - this site may be slow, blocking bots, or have strict security`);
+                enhancedError = new Error(`Page load timeout: ${hostname} took too long to load. The site may be slow, blocking automated access, or require authentication.`);
+                enhancedError.isTimeout = true;
+            }
+            
+            // Check if it's a 403/404/500 server error - mark as blocked
+            if (error.message.includes('403') || 
+                error.message.includes('404') || 
+                error.message.includes('500') || 
+                error.message.includes('Internal Server Error') ||
+                error.message.includes('net::ERR_BLOCKED_BY_CLIENT')) {
+                blockedSites.add(hostname);
+                console.warn(`   🚫 Server blocked this request - will skip for 1 hour`);
+                enhancedError.isBlocked = true;
+                
+                // Auto-clear blocked sites after 1 hour
+                setTimeout(() => {
+                    blockedSites.delete(hostname);
+                    console.log(`   ✅ Unblocked ${hostname} after cooldown`);
+                }, BLOCKED_TTL);
+            }
+            
+            throw enhancedError;
+        }
 }
 
 // Routes
 app.get('/', (req, res) => {
     res.json({
         status: 'running',
-        service: 'Tooltip Companion Backend',
-        version: '1.2.0',
+        service: 'Playwright Tooltip Backend',
+        version: '1.0.0',
         endpoint: 'POST /capture',
         usage: {
             method: 'POST',
@@ -341,6 +423,92 @@ app.get('/', (req, res) => {
             body: { url: 'https://example.com' }
         }
     });
+});
+
+// Serve screenshot files by token
+app.get('/screenshot/:token', async (req, res) => {
+    try {
+        const { token } = req.params;
+        
+        // Look up token
+        const tokenData = screenshotTokens.get(token);
+        if (!tokenData) {
+            console.warn(`[SCREENSHOT] Token not found: ${token}`);
+            return res.status(404).json({
+                error: 'Screenshot not found',
+                message: 'Screenshot token is invalid or has expired'
+            });
+        }
+        
+        // Check if file exists
+        try {
+            const filepath = tokenData.filepath;
+            
+            // Try to stat the file
+            let fileStats;
+            try {
+                fileStats = await fs.stat(filepath);
+            } catch (statError) {
+                // File doesn't exist - clean up and return 404
+                console.warn(`[SCREENSHOT] File not found: ${filepath}`);
+                screenshotTokens.delete(token);
+                return res.status(404).json({
+                    error: 'Screenshot file not found',
+                    message: 'The screenshot file is missing'
+                });
+            }
+            
+            // Check if file is too old (expired)
+            const age = Date.now() - fileStats.mtimeMs;
+            if (age > CACHE_TTL) {
+                // Clean up expired file
+                console.log(`[SCREENSHOT] File expired, cleaning up: ${token}`);
+                await fs.unlink(filepath).catch(() => {});
+                screenshotTokens.delete(token);
+                return res.status(404).json({
+                    error: 'Screenshot expired',
+                    message: 'Screenshot has expired and been removed'
+                });
+            }
+            
+            // Read and send file
+            try {
+                const fileContent = await fs.readFile(filepath);
+                
+                // Set appropriate headers
+                res.setHeader('Content-Type', 'image/png');
+                res.setHeader('Cache-Control', 'public, max-age=300'); // Cache for 5 minutes
+                res.setHeader('Expires', new Date(Date.now() + CACHE_TTL).toUTCString());
+                
+                // Send file
+                res.send(fileContent);
+                console.log(`[SCREENSHOT] Served file: ${token} (${fileContent.length} bytes)`);
+                
+            } catch (readError) {
+                console.error(`[SCREENSHOT] Error reading file ${filepath}:`, readError.message);
+                screenshotTokens.delete(token);
+                return res.status(500).json({
+                    error: 'Failed to read screenshot file',
+                    message: 'The screenshot file could not be read'
+                });
+            }
+            
+        } catch (error) {
+            console.error(`[SCREENSHOT] Error serving screenshot ${token}:`, error.message);
+            screenshotTokens.delete(token);
+            return res.status(404).json({
+                error: 'Screenshot file not found',
+                message: 'The screenshot file is missing'
+            });
+        }
+        
+    } catch (error) {
+        console.error('[SCREENSHOT] Screenshot serve error:', error.message);
+        res.status(500).json({
+            error: 'Failed to serve screenshot',
+            message: error.message
+        });
+    }
 });
 
 app.post('/capture', async (req, res) => {
@@ -364,478 +532,570 @@ app.post('/capture', async (req, res) => {
             });
         }
         
-        // Capture screenshot through queue (handles bursts)
-        const screenshot = await requestQueue.add(async () => {
-            return await captureScreenshot(url);
-        }, 0); // Priority 0 (normal)
+        // Capture screenshot (returns URL now, not base64)
+        const screenshot = await captureScreenshot(url);
         
-        // Send response
-        res.json({ screenshot });
+        // Send response - screenshot is now a URL, not base64
+        res.json({ 
+            screenshot: screenshot,
+            screenshotUrl: screenshot // Explicit field for clarity
+        });
         
     } catch (error) {
         console.error('❌ Capture error:', error.message);
+        
+        // Return appropriate HTTP status codes
+        let statusCode = 500;
+        let errorMessage = error.message;
+        
+        if (error.isTimeout) {
+            statusCode = 504; // Gateway Timeout - more appropriate for timeout errors
+            errorMessage = `Page load timeout: The requested page took too long to load. This may happen with slow sites, sites that block automated access, or pages requiring authentication.`;
+        } else if (error.message.includes('403') || error.message.includes('blocked')) {
+            statusCode = 403; // Forbidden
+            errorMessage = `Access denied: This site blocks automated access. Try accessing the page manually first.`;
+        } else if (error.message.includes('404')) {
+            statusCode = 404; // Not Found
+            errorMessage = `Page not found: The requested URL does not exist or is no longer available.`;
+        } else if (error.message.includes('net::ERR_NAME_NOT_RESOLVED')) {
+            statusCode = 404;
+            errorMessage = `Domain not found: The requested domain name could not be resolved.`;
+        }
+        
+        res.status(statusCode).json({
+            error: error.isTimeout ? 'Page load timeout' : 'Failed to capture screenshot',
+            message: errorMessage,
+            url: url,
+            retryAfter: error.isTimeout ? '30s' : undefined
+        });
+    }
+});
+
+// Get page analysis endpoint (maintained for backward compatibility)
+app.get('/analyze/:url', async (req, res) => {
+    try {
+        const url = decodeURIComponent(req.params.url);
+        
+        // Check cache first
+        const analysis = pageAnalysisCache.get(url);
+        if (analysis) {
+            return res.json({
+                url: url,
+                analysis: analysis,
+                cached: true
+            });
+        }
+        
+        // If not cached, return not found
+        res.status(404).json({
+            error: 'Analysis not found',
+            message: 'Page analysis not available. Take a screenshot first.'
+        });
+        
+    } catch (error) {
+        console.error('❌ Analysis error:', error.message);
         res.status(500).json({
-            error: 'Failed to capture screenshot',
+            error: 'Failed to get analysis',
             message: error.message
         });
     }
 });
 
-// Chat endpoint for AI assistance with full browser context
-app.post('/chat', async (req, res) => {
+// Consolidated context endpoint - returns screenshot AND analysis in one call
+// This eliminates the need for separate /capture and /analyze requests
+app.post('/context', async (req, res) => {
     try {
-        const { message, url, consoleLogs, pageInfo, openaiKey } = req.body;
+        const { url } = req.body;
         
-        // Use provided API key or fallback to environment key
-        let clientToUse = openaiClient;
-        if (openaiKey && openaiKey.trim()) {
-            clientToUse = new OpenAI({ apiKey: openaiKey.trim() });
-            console.log('🤖 Using user-provided OpenAI API key');
-        }
-        
-        if (!clientToUse) {
-            return res.json({ reply: '⚠️ OpenAI API key not configured. Please set your API key in the extension options (click the extension icon → Options).' });
-        }
-        
-        if (!message) {
-            return res.status(400).json({ error: 'Message is required' });
-        }
-        
-        console.log(`💬 Chat request: "${message}"`);
-        
-        // Build comprehensive context
-        let context = `Current Page: ${url}\n`;
-        
-        // Capture screenshot of current page if not in cache
-        if (url) {
-            let cacheEntry = screenshotCache.get(url);
-            
-            // If no cached screenshot for current page, capture it now
-            if (!cacheEntry || !cacheEntry.screenshot) {
-                console.log('📸 No cached screenshot for current page, capturing now...');
-                try {
-                    const screenshot = await captureScreenshot(url);
-                    screenshotCache.set(url, {
-                        screenshot: screenshot,
-                        timestamp: Date.now()
-                    });
-                    cacheEntry = screenshotCache.get(url);
-                    console.log('✅ Current page screenshot captured');
-                } catch (error) {
-                    console.error('❌ Failed to capture current page screenshot:', error.message);
-                }
-            }
-            if (cacheEntry && cacheEntry.analysis) {
-                context += `\n📸 Screenshot Analysis:\n`;
-                context += `- Site Focus: ${cacheEntry.analysis.site_focus}\n`;
-                context += `- Capabilities: ${cacheEntry.analysis.site_capabilities.join(', ')}\n`;
-                context += `- User Intent: ${cacheEntry.analysis.user_task_hypothesis}\n`;
-                context += `- Suggestions: ${cacheEntry.analysis.suggestions.join(', ')}\n`;
-            }
-            
-            // Use cached OCR text if available, otherwise extract on demand
-            if (cacheEntry && cacheEntry.screenshot) {
-                try {
-                    // First check if OCR text is already cached
-                    if (cacheEntry.ocrText && cacheEntry.ocrText.trim()) {
-                        console.log('✅ Using cached OCR text');
-                        const textPreview = cacheEntry.ocrText.substring(0, 200);
-                        context += `\n📝 Page Text Content (OCR - Cached):\n${cacheEntry.ocrText.substring(0, 500)}\n`;
-                        console.log('✅ OCR context added from cache. Extracted text preview:', textPreview);
-                    } else {
-                        console.log('🔍 Starting OCR processing for screenshot (not cached)...');
-                        const { spawnSync } = require('child_process');
-                        const path = require('path');
-                        const fs = require('fs');
-                        
-                        // Save screenshot to temp file for OCR
-                        const tempImagePath = path.join(__dirname, 'temp_screenshot.png');
-                        const base64Data = cacheEntry.screenshot.split(',')[1];
-                        fs.writeFileSync(tempImagePath, Buffer.from(base64Data, 'base64'));
-                        console.log('💾 Screenshot saved to temp file for OCR');
-                        
-                        // Call OCR processor synchronously
-                        const ocrPath = path.join(__dirname, '..', 'Smart Parser and OCR Integration for API Keys and Annotations', 'ocr_processor.py');
-                        
-                        if (fs.existsSync(ocrPath)) {
-                            console.log('🎯 Running OCR script...');
-                            // Set PATH to include Tesseract if not already there
-                            const env = { ...process.env };
-                            // Ensure PATH exists before checking
-                            if (!env.PATH) {
-                                env.PATH = 'C:\\Program Files\\Tesseract-OCR';
-                            } else if (typeof env.PATH === 'string' && !env.PATH.includes('Tesseract-OCR')) {
-                                env.PATH = 'C:\\Program Files\\Tesseract-OCR;' + env.PATH;
-                            }
-                            
-                            const ocrResult = spawnSync('python', [ocrPath, tempImagePath], {
-                                cwd: path.dirname(ocrPath),
-                                encoding: 'utf8',
-                                env: env
-                            });
-                            
-                            // Clean up temp file
-                            fs.unlinkSync(tempImagePath);
-                            
-                            if (ocrResult.status === 0 && ocrResult.stdout) {
-                                try {
-                                    const ocrData = JSON.parse(ocrResult.stdout);
-                                    if (ocrData.full_text_context && !ocrData.error) {
-                                        const textPreview = ocrData.full_text_context.substring(0, 200);
-                                        context += `\n📝 Page Text Content (OCR):\n${ocrData.full_text_context.substring(0, 500)}\n`;
-                                        console.log('✅ OCR context added. Extracted text preview:', textPreview);
-                                    } else if (ocrData.error) {
-                                        console.warn('⚠️ OCR returned error:', ocrData.error);
-                                    }
-                                } catch (parseError) {
-                                    console.error('❌ OCR parse error:', parseError.message);
-                                }
-                            } else {
-                                console.error('❌ OCR failed. Status:', ocrResult.status);
-                                if (ocrResult.stderr) {
-                                    console.error('❌ OCR error output:', ocrResult.stderr);
-                                }
-                            }
-                        } else {
-                            console.warn('⚠️ OCR script not found at:', ocrPath);
-                            fs.unlinkSync(tempImagePath);
-                        }
-                    }
-                } catch (ocrError) {
-                    console.error('❌ OCR processing error:', ocrError.message);
-                    console.error('❌ OCR error stack:', ocrError.stack);
-                }
-            }
-        }
-        
-        // Add console logs if available
-        if (consoleLogs && consoleLogs.length > 0) {
-            context += `\n📊 Recent Console Logs:\n`;
-            consoleLogs.slice(-10).forEach((log, i) => {
-                const level = log.level || 'log';
-                const msg = log.message || log;
-                context += `${i + 1}. [${level}] ${msg}\n`;
+        if (!url) {
+            return res.status(400).json({
+                error: 'Missing url parameter',
+                message: 'Please provide a url in the request body: { "url": "https://example.com" }'
             });
         }
         
-        // Add page info if available
-        if (pageInfo) {
-            context += `\n📄 Page Information:\n`;
-            context += `- Title: ${pageInfo.title}\n`;
-            if (pageInfo.description) context += `- Description: ${pageInfo.description}\n`;
+        // Validate URL
+        try {
+            new URL(url);
+        } catch (error) {
+            return res.status(400).json({
+                error: 'Invalid URL',
+                message: 'Please provide a valid URL'
+            });
         }
         
-        // Get AI response with comprehensive context
-        const response = await clientToUse.chat.completions.create({
-            model: 'gpt-4o',
-            messages: [
+        console.log(`📸 [CONTEXT] Capturing screenshot and generating analysis for: ${url}`);
+        
+        // Check cache first - if we have both screenshot and analysis, return immediately
+        const cacheEntry = screenshotCache.get(url);
+        const analysis = pageAnalysisCache.get(url);
+        
+        if (cacheEntry && isCacheValid(cacheEntry.timestamp) && analysis) {
+            console.log(`📦 [CONTEXT] Cache hit: ${url}`);
+            // Return URL if available, otherwise base64 (backward compatibility)
+            const screenshot = cacheEntry.screenshotUrl || cacheEntry.screenshot;
+            return res.json({
+                url: url,
+                screenshot: screenshot,
+                screenshotUrl: cacheEntry.screenshotUrl || null, // New field for URL
+                analysis: analysis,
+                text: cacheEntry.text || '',
+                cached: true,
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        // Capture screenshot (this also generates analysis internally)
+        const screenshotUrl = await captureScreenshot(url);
+        
+        // Get the fresh analysis from cache (captureScreenshot updates both caches)
+        const freshAnalysis = pageAnalysisCache.get(url);
+        const freshCacheEntry = screenshotCache.get(url);
+        
+        console.log(`✅ [CONTEXT] Screenshot and analysis ready for: ${url}`);
+        console.log(`📊 [CONTEXT] Page type: ${freshAnalysis?.pageType || 'unknown'}`);
+        
+        // Send response with both screenshot URL and analysis
+        res.json({
+            url: url,
+            screenshot: screenshotUrl, // URL instead of base64
+            screenshotUrl: screenshotUrl, // Explicit URL field
+            analysis: freshAnalysis || {
+                pageType: 'unknown',
+                keyTopics: [],
+                suggestedActions: [],
+                confidence: 0
+            },
+            text: freshCacheEntry?.text || '',
+            cached: false,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('❌ [CONTEXT] Error:', error.message);
+        
+        // Return appropriate HTTP status codes
+        let statusCode = 500;
+        let errorMessage = error.message;
+        
+        if (error.isTimeout) {
+            statusCode = 504;
+            errorMessage = `Page load timeout: The requested page took too long to load. This may happen with slow sites, sites that block automated access, or pages requiring authentication.`;
+        } else if (error.message.includes('403') || error.message.includes('blocked')) {
+            statusCode = 403;
+            errorMessage = `Access denied: This site blocks automated access. Try accessing the page manually first.`;
+        } else if (error.message.includes('404')) {
+            statusCode = 404;
+            errorMessage = `Page not found: The requested URL does not exist or is no longer available.`;
+        } else if (error.message.includes('net::ERR_NAME_NOT_RESOLVED')) {
+            statusCode = 404;
+            errorMessage = `Domain not found: The requested domain name could not be resolved.`;
+        }
+        
+        res.status(statusCode).json({
+            error: error.isTimeout ? 'Page load timeout' : 'Failed to capture context',
+            message: errorMessage,
+            url: url,
+            retryAfter: error.isTimeout ? '30s' : undefined
+        });
+    }
+});
+
+// Chat endpoint (REST - maintained for backward compatibility)
+app.post('/chat', async (req, res) => {
+    console.log('🚨 CHAT ENDPOINT CALLED!');
+    try {
+        console.log('📨 Chat request received:', {
+            body: req.body,
+            headers: req.headers,
+            method: req.method
+        });
+        
+        const { message, currentUrl, url, openaiKey, tooltipHistory, pageInfo, consoleLogs } = req.body;
+        const actualUrl = currentUrl || url;
+        
+        console.log('🔍 URL parsing:', { currentUrl, url, actualUrl });
+        
+        if (!message) {
+            console.log('❌ Missing message parameter');
+            return res.status(400).json({
+                error: 'Missing message parameter',
+                message: 'Please provide a message in the request body: { "message": "Hello" }'
+            });
+        }
+        
+        console.log(`[CHAT] Message: ${message}`);
+        console.log(`[KEY] From request: ${openaiKey ? 'YES (' + openaiKey.substring(0, 10) + '...)' : 'NO'}`);
+        console.log(`[KEY] From env: ${process.env.OPENAI_API_KEY ? 'YES (' + process.env.OPENAI_API_KEY.substring(0, 10) + '...)' : 'NO - KEY NOT SET'}`);
+        console.log(`[URL] Current: ${actualUrl || 'none'}`);
+        
+        // Log full key status for debugging (first few chars only)
+        if (process.env.OPENAI_API_KEY) {
+            console.log(`[OK] Backend has OpenAI API key configured (length: ${process.env.OPENAI_API_KEY.length} chars)`);
+        } else {
+            console.log(`[WARN] Backend OPENAI_API_KEY environment variable is NOT set!`);
+            console.log(`       To set it: export OPENAI_API_KEY=sk-... (or configure in ECS task definition)`);
+        }
+        
+        // Use shared chat processing function
+        const result = await processChatRequest(message, currentUrl, url, openaiKey, tooltipHistory, pageInfo, consoleLogs);
+        
+        res.json(result);
+        
+        console.log('[OK] Chat response sent:', {
+            response: result.response.substring(0, 100) + '...',
+            timestamp: result.timestamp,
+            hasContext: !!result.context
+        });
+        
+    } catch (error) {
+        console.error('[ERROR] Chat error:', error.message);
+        res.status(500).json({
+            error: 'Failed to process chat message',
+            message: error.message
+        });
+    }
+});
+
+  // OCR Upload endpoint
+  app.post("/ocr-upload", async (req, res) => {
+      console.log("📸 OCR Upload endpoint called");
+      try {
+          const { image } = req.body;
+          if (!image) {
+              return res.status(400).json({ 
+                  error: "Image data is required",
+                  message: "Please provide an image in base64 format: { \"image\": \"data:image/png;base64,...\" }"
+              });
+          }
+          
+          console.log("🔍 Processing OCR on uploaded image...");
+          
+          // Extract base64 data from data URL if present
+          let base64Data = image;
+          if (image.startsWith('data:image/')) {
+              const commaIndex = image.indexOf(',');
+              base64Data = image.substring(commaIndex + 1);
+          }
+          
+          // Convert base64 to buffer
+          const imageBuffer = Buffer.from(base64Data, 'base64');
+          
+          // Extract text using OCR
+          const extractedText = await extractTextFromScreenshot(imageBuffer);
+          
+          console.log(`✅ OCR completed. Extracted ${extractedText.length} characters`);
+          
+          res.json({ 
+              text: extractedText,
+              success: true,
+              characterCount: extractedText.length
+          });
+      } catch (error) {
+          console.error("❌ OCR Upload error:", error);
+          res.status(500).json({ 
+              error: "OCR processing failed",
+              message: error.message
+          });
+      }
+  });
+
+// Health check
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        browser: browser ? 'initialized' : 'not initialized',
+        cache: {
+            screenshots: screenshotCache.size,
+            analysis: pageAnalysisCache.size
+        },
+        features: {
+            ocr: true,
+            analysis: true,
+            chat: true
+        },
+        config: {
+            openaiKeyConfigured: !!(process.env.OPENAI_API_KEY),
+            openaiKeyLength: process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.length : 0,
+            openaiKeyPrefix: process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.substring(0, 7) + '...' : 'not set'
+        }
+    });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error('❌ Server error:', err.message);
+    
+    if (err.type === 'entity.too.large') {
+        return res.status(413).json({
+            error: 'Payload too large',
+            message: 'Request payload exceeds the maximum allowed size. Try reducing image quality.',
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    res.status(500).json({
+        error: 'Internal server error',
+        message: err.message,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Extract chat logic into reusable function
+async function processChatRequest(message, currentUrl, url, openaiKey, tooltipHistory, pageInfo, consoleLogs) {
+    const actualUrl = currentUrl || url;
+    
+    // Get context from current page if available
+    let contextInfo = '';
+    if (actualUrl) {
+        const analysis = pageAnalysisCache.get(actualUrl);
+        if (analysis) {
+            contextInfo = `\n\nCurrent page context:\n- Page type: ${analysis.pageType}\n- Key topics: ${analysis.keyTopics.join(', ') || 'none'}\n- Suggestions: ${analysis.suggestedActions.join('; ') || 'none'}`;
+        }
+    }
+    
+    // Use OpenAI key from request if provided, otherwise use backend's default key
+    const apiKeyToUse = (openaiKey && openaiKey.trim()) ? openaiKey.trim() : (process.env.OPENAI_API_KEY || '');
+    
+    console.log('[KEY] API Key check:', {
+        userProvided: !!(openaiKey && openaiKey.trim()),
+        backendKey: !!(process.env.OPENAI_API_KEY),
+        keyToUse: apiKeyToUse ? `${apiKeyToUse.substring(0, 10)}...` : 'NONE'
+    });
+    
+    // Check if we have an OpenAI key to use
+    if (apiKeyToUse) {
+        console.log('[INFO] Using OpenAI API for chat response');
+        try {
+            // Prepare messages for OpenAI
+            const messages = [
                 {
                     role: 'system',
-                    content: `You are an advanced AI browser assistant helping users understand and interact with web pages. You have access to:
-
-- Screenshot analysis of the current page
-- Console logs from the browser
-- Page metadata and information
-- Real-time browser state
-
-Context:
-${context}
-
-Provide helpful, specific, and actionable responses. If you see errors in console logs, help debug them. Be concise but thorough.`
+                    content: `You are a helpful assistant for the Tooltip Companion browser extension. You help users understand web pages by analyzing screenshots and providing context-aware assistance.${contextInfo ? '\n\nUser is currently on a page with this context:' + contextInfo : ''}`
                 },
                 {
                     role: 'user',
                     content: message
                 }
-            ],
-            max_tokens: 500,
-            temperature: 0.7
-        });
-        
-        const reply = response.choices[0].message.content;
-        console.log(`✅ Chat response generated`);
-        
-        res.json({ reply });
-        
-    } catch (error) {
-        console.error('❌ Chat error:', error.message);
-        res.status(500).json({ error: 'Failed to process chat request', details: error.message });
-    }
-});
-
-// Voice transcription endpoint using OpenAI Whisper
-app.post('/transcribe', async (req, res) => {
-    try {
-        const { audio } = req.body;
-        
-        // Use provided API key or fallback to environment key
-        let clientToUse = openaiClient;
-        const requestKey = req.body.openaiKey;
-        if (requestKey && requestKey.trim()) {
-            clientToUse = new OpenAI({ apiKey: requestKey.trim() });
-        }
-        
-        if (!clientToUse) {
-            return res.json({ text: null, error: 'OpenAI API key not configured' });
-        }
-        
-        if (!audio) {
-            return res.status(400).json({ error: 'Audio data is required' });
-        }
-        
-        console.log('🎤 Transcribing audio...');
-        
-        // Convert base64 to buffer
-        const audioBuffer = Buffer.from(audio, 'base64');
-        
-        // Create a temporary file for OpenAI Whisper API
-        const fs = require('fs');
-        const path = require('path');
-        const tempFilePath = path.join(__dirname, 'temp_audio.webm');
-        
-        // Write buffer to file
-        fs.writeFileSync(tempFilePath, audioBuffer);
-        
-        // Create file object for OpenAI
-        const fileStream = fs.createReadStream(tempFilePath);
-        
-        // Transcribe using OpenAI Whisper
-        const transcription = await clientToUse.audio.transcriptions.create({
-            file: fileStream,
-            model: 'whisper-1',
-            language: 'en'
-        });
-        
-        // Clean up temp file
-        fs.unlinkSync(tempFilePath);
-        
-        console.log('✅ Transcribed:', transcription.text);
-        
-        res.json({ text: transcription.text });
-        
-    } catch (error) {
-        console.error('❌ Transcription error:', error.message);
-        res.status(500).json({ error: 'Failed to transcribe audio', details: error.message });
-    }
-});
-
-// Parse API key from natural language text
-app.post('/parse-key', async (req, res) => {
-    try {
-        const { text } = req.body;
-        
-        if (!text) {
-            return res.status(400).json({ error: 'Text is required' });
-        }
-        
-        console.log('🔑 Parsing API key from text...');
-        
-        // Call Python script to parse API key
-        const { spawn } = require('child_process');
-        const path = require('path');
-        const fs = require('fs');
-        
-        // Check if the parser script exists
-        const parserPath = path.join(__dirname, '..', 'Smart Parser and OCR Integration for API Keys and Annotations', 'api_key_parser.py');
-        
-        if (!fs.existsSync(parserPath)) {
-            return res.status(500).json({ 
-                error: 'Parser script not found',
-                message: 'API key parser not available. Please ensure Python environment is configured.'
+            ];
+            
+            // Call OpenAI API
+            const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKeyToUse}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-3.5-turbo',
+                    messages: messages,
+                    max_tokens: 500,
+                    temperature: 0.7
+                })
             });
-        }
-        
-        // Spawn Python process with text as argument
-        const pythonProcess = spawn('python', [parserPath, text], {
-            cwd: path.dirname(parserPath)
-        });
-        
-        let output = '';
-        let errorOutput = '';
-        
-        pythonProcess.stdout.on('data', (data) => {
-            output += data.toString();
-        });
-        
-        pythonProcess.stderr.on('data', (data) => {
-            errorOutput += data.toString();
-        });
-        
-        pythonProcess.on('close', (code) => {
-            if (code !== 0) {
-                console.error('❌ Parser error:', errorOutput);
-                return res.status(500).json({ 
-                    error: 'Parser execution failed', 
-                    details: errorOutput 
-                });
+            
+            if (!openaiResponse.ok) {
+                const errorData = await openaiResponse.json().catch(() => ({}));
+                throw new Error(errorData.error?.message || `OpenAI API error: ${openaiResponse.status}`);
             }
             
-            try {
-                const result = JSON.parse(output);
-                console.log('✅ Parsed API key:', result.api_key ? 'Found' : 'Not found');
-                res.json(result);
-            } catch (parseError) {
-                console.error('❌ Parse error:', parseError);
-                res.status(500).json({ 
-                    error: 'Failed to parse parser output', 
-                    details: parseError.message 
-                });
-            }
-        });
-        
-    } catch (error) {
-        console.error('❌ Parse key error:', error.message);
-        res.status(500).json({ error: 'Failed to process parse request', details: error.message });
+            const openaiData = await openaiResponse.json();
+            const aiResponse = openaiData.choices?.[0]?.message?.content || 'Sorry, I could not generate a response.';
+            
+            return {
+                response: aiResponse,
+                timestamp: new Date().toISOString(),
+                context: actualUrl ? pageAnalysisCache.get(actualUrl) : null,
+                source: 'openai'
+            };
+        } catch (error) {
+            console.error('❌ OpenAI API error:', error.message);
+            console.error('❌ OpenAI API error details:', {
+                status: error.status,
+                message: error.message,
+                stack: error.stack
+            });
+            // Fall through to basic response
+        }
+    } else {
+        console.log('[WARN] No OpenAI API key available - using fallback response');
     }
-});
+    
+    // Generate a basic helpful response (fallback)
+    let response;
+    const lowerMessage = message.toLowerCase();
+    
+    if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey')) {
+        response = `Hello! 👋 I'm your Smart Tooltip Companion. I can analyze web pages using OCR and provide intelligent insights about what you're viewing.${contextInfo}`;
+    } else if (lowerMessage.includes('analyze') || lowerMessage.includes('what is this page')) {
+        if (actualUrl && pageAnalysisCache.has(actualUrl)) {
+            const analysis = pageAnalysisCache.get(actualUrl);
+            response = `📊 Page Analysis for ${actualUrl}:\n• Type: ${analysis.pageType}\n• Confidence: ${Math.round(analysis.confidence * 100)}%\n• Key Topics: ${analysis.keyTopics.join(', ') || 'none'}\n• Suggestions: ${analysis.suggestedActions.join('; ') || 'none'}`;
+        } else {
+            response = `I can analyze pages! Hover over a link to capture a screenshot, then ask me to analyze it.`;
+        }
+    } else if (lowerMessage.includes('tooltip') || lowerMessage.includes('screenshot')) {
+        response = `The smart tooltip system now includes:\n• OCR text extraction from screenshots\n• Intelligent page type detection\n• Proactive suggestions based on content\n• Context-aware chat responses${contextInfo}`;
+    } else if (lowerMessage.includes('help')) {
+        response = `I can help you with:\n• 🔍 Page analysis (OCR + AI insights)\n• 📸 Smart tooltips with context\n• 🧠 Proactive suggestions\n• 💬 Context-aware chat\n\nTry: "analyze this page" or "what type of page is this?"${contextInfo}`;
+    } else {
+        // More helpful fallback message that doesn't assume user needs to add key
+        response = `I received your message: "${message}". I'm equipped with OCR and smart analysis! Ask me to analyze pages or explain what I can see.${contextInfo}\n\nNote: For enhanced AI responses, ensure the backend has an OpenAI API key configured.`;
+    }
+    
+    return {
+        response,
+        timestamp: new Date().toISOString(),
+        context: actualUrl ? pageAnalysisCache.get(actualUrl) : null
+    };
+}
 
-// Get OCR text for a screenshot
-app.get('/ocr', (req, res) => {
-    const url = req.query.url;
-    
-    if (!url) {
-        return res.status(400).json({
-            error: 'Missing url parameter',
-            message: 'Please provide ?url=https://example.com'
-        });
+// Initialize MCP Server
+const mcpServer = new MCPServer(
+    // captureHandler
+    async (url) => {
+        return await captureScreenshot(url);
+    },
+    // chatHandler
+    async ({ message, currentUrl, openaiKey, tooltipHistory }) => {
+        return await processChatRequest(
+            message,
+            currentUrl,
+            currentUrl, // url param
+            openaiKey,
+            tooltipHistory,
+            null, // pageInfo
+            null  // consoleLogs
+        );
+    },
+    // ocrHandler
+    async (image) => {
+        const imageBuffer = Buffer.from(image.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+        const text = await extractTextFromScreenshot(imageBuffer);
+        return {
+            text,
+            characterCount: text.length,
+            success: true
+        };
+    },
+    // analysisHandler
+    async (url) => {
+        const analysis = pageAnalysisCache.get(url);
+        if (!analysis) {
+            return {
+                error: 'Analysis not found',
+                message: 'Page analysis not available. Take a screenshot first.'
+            };
+        }
+        return {
+            url,
+            analysis,
+            cached: true
+        };
     }
-    
-    // Check cache
-    const cacheEntry = screenshotCache.get(url);
-    if (cacheEntry && cacheEntry.ocrText && cacheEntry.ocrText.trim()) {
-        return res.json({
-            url: url,
-            ocrText: cacheEntry.ocrText,
-            ocrTimestamp: cacheEntry.ocrTimestamp,
-            status: 'success'
-        });
-    }
-    
-    res.json({
-        url: url,
-        ocrText: '',
-        message: 'OCR text not available yet (still processing)',
-        status: 'processing'
-    });
-});
+);
 
-// OCR upload endpoint for live image uploads
-app.post('/ocr-upload', async (req, res) => {
+// MCP endpoint - JSON-RPC 2.0 over HTTP POST
+app.post('/mcp', async (req, res) => {
     try {
-        const { image } = req.body;
+        const request = req.body;
         
-        if (!image) {
+        console.log('[MCP] Endpoint called:', {
+            method: request.method,
+            id: request.id,
+            hasParams: !!request.params,
+            jsonrpc: request.jsonrpc
+        });
+        
+        // Validate JSON-RPC 2.0 request
+        if (request.jsonrpc !== '2.0') {
+            console.error('[ERROR] MCP: Invalid jsonrpc version:', request.jsonrpc);
             return res.status(400).json({
-                error: 'Missing image parameter',
-                message: 'Please provide an image in base64 format'
+                jsonrpc: '2.0',
+                id: request.id || null,
+                error: {
+                    code: -32600,
+                    message: 'Invalid Request',
+                    data: 'jsonrpc must be "2.0"'
+                }
             });
         }
         
-        console.log('📷 Processing uploaded image for OCR...');
+        // Handle JSON-RPC 2.0 request
+        const response = await mcpServer.handleRequest(request);
         
-        // Extract base64 data
-        const base64Data = image.includes(',') ? image.split(',')[1] : image;
-        
-        // Save to temp file
-        const fs = require('fs');
-        const path = require('path');
-        const tempPath = path.join(__dirname, 'temp_upload_' + Date.now() + '.png');
-        
-        fs.writeFileSync(tempPath, Buffer.from(base64Data, 'base64'));
-        
-        // Run OCR
-        const { spawnSync } = require('child_process');
-        const ocrPath = path.join(__dirname, '..', 'Smart Parser and OCR Integration for API Keys and Annotations', 'ocr_processor.py');
-        
-        const env = { ...process.env };
-        if (!env.PATH) {
-            env.PATH = 'C:\\Program Files\\Tesseract-OCR';
-        } else if (typeof env.PATH === 'string' && !env.PATH.includes('Tesseract-OCR')) {
-            env.PATH = 'C:\\Program Files\\Tesseract-OCR;' + env.PATH;
-        }
-        
-        const result = spawnSync('python', [ocrPath, tempPath], {
-            encoding: 'utf8',
-            env: env
+        console.log('[MCP] Request handled, response:', {
+            hasError: !!response?.error,
+            hasResult: !!response?.result,
+            isNotification: response === null
         });
         
-        // Clean up
-        fs.unlinkSync(tempPath);
-        
-        if (result.status === 0 && result.stdout) {
-            try {
-                const ocrData = JSON.parse(result.stdout);
-                if (ocrData.full_text_context && !ocrData.error) {
-                    console.log(`✅ OCR extracted ${ocrData.full_text_context.length} characters`);
-                    return res.json({
-                        status: 'success',
-                        ocrText: ocrData.full_text_context,
-                        characterCount: ocrData.full_text_context.length
-                    });
-                } else if (ocrData.error) {
-                    return res.json({
-                        status: 'error',
-                        error: ocrData.error
-                    });
-                }
-            } catch (parseError) {
-                console.error('OCR parse error:', parseError.message);
-            }
+        // Notifications don't return responses
+        if (response === null) {
+            console.log('[MCP] Notification received (no response)');
+            return res.status(204).send(); // No Content
         }
         
-        res.json({
-            status: 'error',
-            error: 'Failed to extract OCR text from uploaded image'
-        });
-        
+        res.json(response);
     } catch (error) {
-        console.error('❌ OCR upload error:', error.message);
+        console.error('[ERROR] MCP endpoint error:', error);
+        console.error('[ERROR] MCP endpoint error details:', {
+            message: error.message,
+            stack: error.stack?.substring(0, 300),
+            requestId: req.body?.id
+        });
         res.status(500).json({
-            status: 'error',
-            error: error.message
+            jsonrpc: '2.0',
+            id: req.body?.id || null,
+            error: {
+                code: -32603,
+                message: 'Internal error',
+                data: error.message
+            }
         });
     }
 });
 
-// Health check
-app.get('/health', (req, res) => {
-    const poolStats = browserPool.getStats();
-    const queueStats = requestQueue.getStats();
-    
-    res.json({
-        status: 'healthy',
-        pool: poolStats,
-        queue: queueStats,
-        openai: openaiClient ? 'configured' : 'not configured',
-        cache: {
-            size: screenshotCache.size,
-            entries: Array.from(screenshotCache.keys()).slice(0, 10) // Limit entries
-        }
+// 404 handler (must come after all routes)
+app.use((req, res) => {
+    res.status(404).json({
+        error: 'Not found',
+        message: `Endpoint ${req.method} ${req.path} not found`,
+        timestamp: new Date().toISOString()
     });
 });
 
 // Start server
 async function start() {
-    // Initialize browser pool
-    await browserPool.init();
+    // Ensure screenshot directory exists
+    await ensureScreenshotDir();
+    
+    await initBrowser();
     
     app.listen(PORT, () => {
-        console.log('\n═══════════════════════════════════════════════════');
-        console.log('🚀 Tooltip Companion Backend Service');
-        console.log('═══════════════════════════════════════════════════');
-        console.log(`📡 Server running on http://localhost:${PORT}`);
-        console.log(`📸 Endpoint: POST http://localhost:${PORT}/capture`);
-        console.log(`❤️  Health: GET http://localhost:${PORT}/health`);
-        console.log('═══════════════════════════════════════════════════\n');
-        console.log('💡 Send a POST request with:');
-        console.log('   { "url": "https://example.com" }');
-        console.log('\n⏳ Waiting for requests...\n');
+        console.log('\n===================================================');
+        console.log('Playwright Tooltip Backend Service');
+        console.log('===================================================');
+        console.log(`Server running on http://localhost:${PORT}`);
+        console.log(`Endpoint: POST http://localhost:${PORT}/capture`);
+        console.log(`Context: POST http://localhost:${PORT}/context`);
+        console.log(`Screenshots: GET http://localhost:${PORT}/screenshot/:token`);
+        console.log(`MCP Endpoint: POST http://localhost:${PORT}/mcp`);
+        console.log(`Health: GET http://localhost:${PORT}/health`);
+        console.log('===================================================\n');
+        console.log('REST API: POST /capture with { "url": "..." }');
+        console.log('Context API: POST /context with { "url": "..." }');
+        console.log('MCP Protocol: POST /mcp with JSON-RPC 2.0');
+        console.log(`Screenshot storage: ${SCREENSHOT_DIR}`);
+        console.log('\nWaiting for requests...\n');
     });
 }
 
 // Start the server
 start().catch(error => {
-    console.error('❌ Failed to start server:', error);
+    console.error('[ERROR] Failed to start server:', error);
     process.exit(1);
 });
 
