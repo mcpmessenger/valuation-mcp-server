@@ -414,10 +414,47 @@ app.post('/chat', async (req, res) => {
       console.log("📸 OCR Upload endpoint called");
       try {
           const { image } = req.body;
+          
           if (!image) {
               return res.status(400).json({ error: "Image data is required" });
           }
-          res.json({ text: "OCR processing not implemented yet", success: true });
+          
+          // Process the image with OCR
+          const { createWorker } = require('tesseract.js');
+          const worker = await createWorker();
+          
+          await worker.loadLanguage('eng');
+          await worker.initialize('eng');
+          
+          console.log("🔍 Processing image with OCR...");
+          
+          // Handle both data URL and base64 string
+          let imageData = image;
+          if (image.startsWith('data:')) {
+              // Extract base64 part from data URL
+              imageData = image.split(',')[1];
+          }
+          
+          // Convert base64 to buffer
+          const imageBuffer = Buffer.from(imageData, 'base64');
+          
+          const { data: { text } } = await worker.recognize(imageBuffer);
+          await worker.terminate();
+          
+          console.log("✅ OCR processing completed");
+          res.json({ 
+              ocrText: text.trim(),
+              success: true 
+          });
+          
+      } catch (error) {
+          console.error("❌ OCR Upload error:", error);
+          res.status(500).json({ 
+              error: "OCR processing failed",
+              message: error.message 
+          });
+      }
+  });
       } catch (error) {
           console.error("❌ OCR Upload error:", error);
           res.status(500).json({ error: "OCR processing failed" });
@@ -494,4 +531,5 @@ start().catch(error => {
     console.error('❌ Failed to start server:', error);
     process.exit(1);
 });
+
 
