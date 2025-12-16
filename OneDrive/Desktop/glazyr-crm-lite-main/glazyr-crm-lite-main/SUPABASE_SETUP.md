@@ -73,3 +73,4 @@ The current setup allows public read/write access. If you want to add authentica
 
 For now, this setup works great for personal use and cross-device sync!
 
+

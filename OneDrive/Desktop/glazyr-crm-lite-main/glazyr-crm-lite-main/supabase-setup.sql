@@ -49,3 +49,4 @@ CREATE INDEX IF NOT EXISTS idx_contacts_company ON contacts(company);
 CREATE INDEX IF NOT EXISTS idx_contacts_tier ON contacts(tier);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
 
+
