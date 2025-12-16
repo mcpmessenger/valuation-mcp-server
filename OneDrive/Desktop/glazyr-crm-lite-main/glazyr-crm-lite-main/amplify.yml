@@ -3,8 +3,10 @@ frontend:
   phases:
     preBuild:
       commands:
+        - echo "Forcing npm usage - removing other lock files"
         - rm -f pnpm-lock.yaml yarn.lock
         - npm --version
+        - echo "Installing dependencies with npm"
         - npm ci --legacy-peer-deps
     build:
       commands:

@@ -12,17 +12,15 @@
    - Select repository: `mcpmessenger/glazyr-crm-lite`
    - Branch: `main`
 
-3. **Configure Build Settings**
-   - AWS Amplify will auto-detect Next.js
-   - Use the `amplify.yml` file included in the repo
-   - Build command: `npm run build`
-   - Output directory: `.next`
-   - **IMPORTANT**: Make sure Node.js version is set to 18.x or higher
-   - Go to App settings → Build settings → Edit
-   - Set Node version to 18 or 20
-   - **CRITICAL**: In Build settings, look for "Package manager" or "Override package manager"
-   - If available, explicitly set it to "npm" (not auto-detect)
-   - If not available, the `amplify.yml` file should override it
+3. **Configure Build Settings - CRITICAL STEP**
+   - Go to your Amplify app → App settings → Build settings → Edit
+   - **IMPORTANT**: Look for "Package manager" dropdown
+   - **MUST SET**: Change from "Auto-detect" to "npm"
+   - Set Node.js version to 18.x or 20.x
+   - The `amplify.yml` file will handle the rest
+   - **NOTE**: If you don't see "Package manager" option, you may need to:
+     - Clear build cache (App settings → Build settings → Clear cache)
+     - Or disconnect and reconnect the repository
 
 4. **Add Environment Variables**
    - Go to App settings → Environment variables
