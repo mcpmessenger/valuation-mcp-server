@@ -3,6 +3,7 @@ frontend:
   phases:
     preBuild:
       commands:
+        - rm -f pnpm-lock.yaml yarn.lock
         - npm --version
         - npm ci --legacy-peer-deps
     build:
