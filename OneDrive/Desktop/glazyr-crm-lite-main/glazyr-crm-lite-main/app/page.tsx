@@ -442,6 +442,7 @@ export default function GlazyrCRM() {
                 <Trash2 className="h-4 w-4 sm:mr-2" />
                 <span className="hidden sm:inline">Clear All</span>
               </Button>
+              {/* Force deployment update */}
               <Button variant="outline" size="sm" onClick={handleExportCSV} disabled={contacts.length === 0}>
                 <Download className="h-4 w-4 sm:mr-2" />
                 <span className="hidden sm:inline">Export</span>
