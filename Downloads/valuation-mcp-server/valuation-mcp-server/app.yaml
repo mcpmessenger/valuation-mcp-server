@@ -1,0 +1,54 @@
+# Google Cloud Run configuration
+# This file can be used with gcloud run deploy
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: valuation-mcp-server
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: "100"
+        autoscaling.knative.dev/minScale: "1"
+    spec:
+      serviceAccountName: default
+      containers:
+      - image: gcr.io/PROJECT_ID/valuation-mcp-server:latest
+        ports:
+        - containerPort: 8001
+        resources:
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+          requests:
+            cpu: "0.5"
+            memory: "256Mi"
+        env:
+        - name: PORT
+          value: "8001"
+        - name: ENVIRONMENT
+          value: "production"
+        - name: LOG_LEVEL
+          value: "INFO"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 5
+          periodSeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+      timeoutSeconds: 300
+  traffic:
+  - percent: 100
+    latestRevision: true
